@@ -1,14 +1,16 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { and, eq, sql } from "drizzle-orm";
-import { router, protectedProcedure, requireRole } from "../trpc.js";
+import { randomUUID } from "node:crypto";
+import { router, publicProcedure, protectedProcedure, requireRole } from "../trpc.js";
 import { db, schema } from "../db/index.js";
 
 const { demandesRamassage, ramasseurs, notifications } = schema;
 
 export const ramassageRouter = router({
-  // Le client crée une demande de ramassage
-  creerDemande: protectedProcedure
+  // Le client crée une demande de ramassage — fonctionne connecté OU en tant qu'invité,
+  // même logique que gaz.creerCommande : compte créé/réutilisé silencieusement si besoin.
+  creerDemande: publicProcedure
     .input(
       z.object({
         adresse: z.string().min(5),
@@ -19,13 +21,70 @@ export const ramassageRouter = router({
         typeDechet: z.string().default("menager"),
         quantiteEstimee: z.string().optional(),
         prixPropose: z.number().optional(),
+        // Renseignés uniquement si la personne n'est pas déjà connectée
+        nomClient: z.string().min(2).optional(),
+        telephoneClient: z.string().min(8).optional(),
+        motDePasseClient: z.string().min(6).optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
+      let clientId: string;
+      let tokenGenere: string | undefined;
+      let userGenere: { id: string; nom: string; role: string } | undefined;
+
+      if (ctx.user) {
+        clientId = ctx.user.id;
+      } else {
+        if (!input.nomClient || !input.telephoneClient) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Nom et téléphone requis pour envoyer une demande sans compte",
+          });
+        }
+
+        const [existant] = await db
+          .select()
+          .from(schema.utilisateurs)
+          .where(eq(schema.utilisateurs.telephone, input.telephoneClient));
+
+        if (existant) {
+          clientId = existant.id;
+        } else {
+          const bcrypt = (await import("bcryptjs")).default;
+          const motDePasseHash = await bcrypt.hash(input.motDePasseClient ?? randomUUID(), 10);
+
+          const [nouveauClient] = await db
+            .insert(schema.utilisateurs)
+            .values({
+              nom: input.nomClient,
+              telephone: input.telephoneClient,
+              motDePasseHash,
+              ville: input.ville,
+              commune: input.commune,
+              role: "client",
+            })
+            .returning();
+          clientId = nouveauClient.id;
+        }
+
+        const jwt = (await import("jsonwebtoken")).default;
+        const [utilisateurComplet] = await db
+          .select()
+          .from(schema.utilisateurs)
+          .where(eq(schema.utilisateurs.id, clientId));
+
+        tokenGenere = jwt.sign(
+          { id: utilisateurComplet.id, role: utilisateurComplet.role, telephone: utilisateurComplet.telephone },
+          process.env.JWT_SECRET as string,
+          { expiresIn: "30d" }
+        );
+        userGenere = { id: utilisateurComplet.id, nom: utilisateurComplet.nom, role: utilisateurComplet.role };
+      }
+
       const [demande] = await db
         .insert(demandesRamassage)
         .values({
-          clientId: ctx.user.id,
+          clientId,
           adresse: input.adresse,
           latitude: input.latitude,
           longitude: input.longitude,
@@ -39,7 +98,7 @@ export const ramassageRouter = router({
         .returning();
 
       // TODO: notifier par push/SMS tous les ramasseurs validés couvrant cette commune/ville
-      return demande;
+      return { demande, token: tokenGenere, user: userGenere };
     }),
 
   // Liste des demandes disponibles pour un ramasseur (dans sa zone, statut en_attente)
