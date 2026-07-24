@@ -9,6 +9,7 @@ const {
   demandesRamassage,
   boutiquesGaz,
   ramasseurs,
+  livreurs,
   utilisateurs,
   marquesGaz,
   stockBoutique,
@@ -48,6 +49,10 @@ export const adminRouter = router({
       .select({ n: count() })
       .from(ramasseurs)
       .where(eq(ramasseurs.statutValidation, "en_attente"));
+    const [livreursEnAttente] = await db
+      .select({ n: count() })
+      .from(livreurs)
+      .where(eq(livreurs.statutValidation, "en_attente"));
 
     return {
       commandesGaz: {
@@ -62,6 +67,7 @@ export const adminRouter = router({
       validationsEnAttente: {
         boutiques: boutiquesEnAttente.n,
         ramasseurs: ramasseursEnAttente.n,
+        livreurs: livreursEnAttente.n,
       },
     };
   }),
@@ -160,6 +166,36 @@ export const adminRouter = router({
         throw new TRPCError({ code: "NOT_FOUND", message: "Ramasseur introuvable" });
       }
       return ramasseur;
+    }),
+
+  // ---- Livreurs de gaz ----
+  listLivreurs: adminProcedure.query(async () => {
+    const rows = await db
+      .select({
+        livreur: livreurs,
+        nom: utilisateurs.nom,
+        telephone: utilisateurs.telephone,
+      })
+      .from(livreurs)
+      .innerJoin(utilisateurs, eq(livreurs.utilisateurId, utilisateurs.id))
+      .orderBy(desc(livreurs.createdAt));
+
+    return rows.map((r) => ({ ...r.livreur, nom: r.nom, telephone: r.telephone }));
+  }),
+
+  validerLivreur: adminProcedure
+    .input(z.object({ livreurId: z.string().uuid(), approuver: z.boolean() }))
+    .mutation(async ({ input }) => {
+      const [livreur] = await db
+        .update(livreurs)
+        .set({ statutValidation: input.approuver ? "valide" : "rejete" })
+        .where(eq(livreurs.id, input.livreurId))
+        .returning();
+
+      if (!livreur) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Livreur introuvable" });
+      }
+      return livreur;
     }),
 
   // ---- Marques de gaz (référentiel) ----

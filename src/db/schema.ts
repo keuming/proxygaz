@@ -20,6 +20,7 @@ import { relations } from "drizzle-orm";
 export const roleEnum = pgEnum("role", [
   "client",
   "boutique",
+  "livreur",
   "ramasseur",
   "admin",
 ]);
@@ -127,11 +128,24 @@ export const stockBoutique = pgTable("stock_boutique", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+// Livreurs de bouteilles de gaz (distincts des ramasseurs d'ordures)
+export const livreurs = pgTable("livreurs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  utilisateurId: uuid("utilisateur_id").references(() => utilisateurs.id).notNull(),
+  vehicule: varchar("vehicule", { length: 60 }), // "moto", "tricycle", "camionnette"
+  zonesCouvertes: jsonb("zones_couvertes").notNull().default([]), // ["Cocody", "Marcory", ...]
+  statutValidation: statutValidationEnum("statut_validation").default("en_attente"),
+  noteMoyenne: doublePrecision("note_moyenne").default(0),
+  nombreLivraisons: integer("nombre_livraisons").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 export const commandesGaz = pgTable("commandes_gaz", {
   id: uuid("id").defaultRandom().primaryKey(),
   clientId: uuid("client_id").references(() => utilisateurs.id).notNull(),
   marqueGazId: uuid("marque_gaz_id").references(() => marquesGaz.id).notNull(),
   boutiqueId: uuid("boutique_id").references(() => boutiquesGaz.id),
+  livreurId: uuid("livreur_id").references(() => livreurs.id), // null jusqu'à acceptation par un livreur
   quantite: integer("quantite").notNull().default(1),
   echangeBouteilleVide: boolean("echange_bouteille_vide").notNull().default(true),
   adresseLivraison: text("adresse_livraison").notNull(),
@@ -249,6 +263,18 @@ export const commandesGazRelations = relations(commandesGaz, ({ one }) => ({
     fields: [commandesGaz.marqueGazId],
     references: [marquesGaz.id],
   }),
+  livreur: one(livreurs, {
+    fields: [commandesGaz.livreurId],
+    references: [livreurs.id],
+  }),
+}));
+
+export const livreursRelations = relations(livreurs, ({ one, many }) => ({
+  utilisateur: one(utilisateurs, {
+    fields: [livreurs.utilisateurId],
+    references: [utilisateurs.id],
+  }),
+  commandes: many(commandesGaz),
 }));
 
 export const ramasseursRelations = relations(ramasseurs, ({ one, many }) => ({

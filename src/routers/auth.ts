@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import { router, publicProcedure } from "../trpc.js";
 import { db, schema } from "../db/index.js";
 
-const { utilisateurs, ramasseurs, boutiquesGaz } = schema;
+const { utilisateurs, ramasseurs, boutiquesGaz, livreurs } = schema;
 
 function genererToken(user: { id: string; role: string; telephone: string }) {
   const payload: { id: string; role: string; telephone: string } = {
@@ -99,6 +99,54 @@ export const authRouter = router({
         nomSociete: input.nomSociete,
         zonesCouvertes: input.zonesCouvertes,
         vehicule: input.vehicule,
+        statutValidation: "en_attente", // validé manuellement par l'admin
+      });
+
+      return {
+        token: genererToken(user),
+        user: { id: user.id, nom: user.nom, role: user.role },
+        message: "Inscription reçue, en attente de validation par l'équipe ProxiGaz",
+      };
+    }),
+
+  inscriptionLivreur: publicProcedure
+    .input(
+      z.object({
+        nom: z.string().min(2),
+        telephone: z.string().min(8),
+        motDePasse: z.string().min(6),
+        ville: z.string().min(2),
+        vehicule: z.string().optional(),
+        zonesCouvertes: z.array(z.string()).min(1),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const existant = await db
+        .select()
+        .from(utilisateurs)
+        .where(eq(utilisateurs.telephone, input.telephone));
+
+      if (existant.length > 0) {
+        throw new TRPCError({ code: "CONFLICT", message: "Ce numéro est déjà utilisé" });
+      }
+
+      const motDePasseHash = await bcrypt.hash(input.motDePasse, 10);
+
+      const [user] = await db
+        .insert(utilisateurs)
+        .values({
+          nom: input.nom,
+          telephone: input.telephone,
+          motDePasseHash,
+          ville: input.ville,
+          role: "livreur",
+        })
+        .returning();
+
+      await db.insert(livreurs).values({
+        utilisateurId: user.id,
+        vehicule: input.vehicule,
+        zonesCouvertes: input.zonesCouvertes,
         statutValidation: "en_attente", // validé manuellement par l'admin
       });
 

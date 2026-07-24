@@ -4,7 +4,7 @@ import { and, eq, gt, sql } from "drizzle-orm";
 import { router, protectedProcedure, requireRole } from "../trpc.js";
 import { db, schema } from "../db/index.js";
 
-const { commandesGaz, marquesGaz, boutiquesGaz, stockBoutique, notifications } = schema;
+const { commandesGaz, marquesGaz, boutiquesGaz, stockBoutique, livreurs, notifications } = schema;
 
 export const gazRouter = router({
   // Liste des marques/tailles disponibles (catalogue public)
@@ -134,7 +134,7 @@ export const gazRouter = router({
       return commandeConfirmee;
     }),
 
-  // Transition confirmee -> en_livraison (déclenchée par la boutique quand le livreur part)
+  // Transition confirmee -> en_livraison, DÉCLENCHÉE PAR L'ADMIN/LA BOUTIQUE (assignation manuelle)
   demarrerLivraison: requireRole("boutique", "admin")
     .input(z.object({ commandeId: z.string().uuid(), livreurNom: z.string().optional(), livreurTelephone: z.string().optional() }))
     .mutation(async ({ input }) => {
@@ -158,16 +158,110 @@ export const gazRouter = router({
       return commande;
     }),
 
-  marquerLivree: requireRole("boutique", "admin")
+  // Livraisons disponibles pour un livreur (commandes confirmées, dans sa zone, pas encore prises)
+  livraisonsDisponibles: requireRole("livreur").query(async ({ ctx }) => {
+    const [profilLivreur] = await db
+      .select()
+      .from(livreurs)
+      .where(eq(livreurs.utilisateurId, ctx.user.id));
+
+    if (!profilLivreur) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "Profil livreur introuvable" });
+    }
+
+    const zones = profilLivreur.zonesCouvertes as string[];
+
+    const rows = await db
+      .select({
+        commande: commandesGaz,
+        boutiqueNom: boutiquesGaz.nomBoutique,
+        boutiqueVille: boutiquesGaz.ville,
+        boutiqueCommune: boutiquesGaz.commune,
+        boutiqueAdresse: boutiquesGaz.adresse,
+      })
+      .from(commandesGaz)
+      .innerJoin(boutiquesGaz, eq(commandesGaz.boutiqueId, boutiquesGaz.id))
+      .where(eq(commandesGaz.statut, "confirmee"));
+
+    return rows
+      .filter((r) => zones.includes(r.boutiqueCommune ?? "") || zones.includes(r.boutiqueVille))
+      .map((r) => ({
+        ...r.commande,
+        boutiqueNom: r.boutiqueNom,
+        boutiqueVille: r.boutiqueVille,
+        boutiqueCommune: r.boutiqueCommune,
+        boutiqueAdresse: r.boutiqueAdresse,
+      }));
+  }),
+
+  /**
+   * ACCEPTATION D'UNE LIVRAISON - "premier qui accepte, gagne"
+   * Même pattern atomique que ramassage.validerDemande : UPDATE conditionné sur le
+   * statut actuel pour éviter la course entre plusieurs livreurs.
+   */
+  accepterLivraison: requireRole("livreur")
     .input(z.object({ commandeId: z.string().uuid() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      const [profilLivreur] = await db
+        .select()
+        .from(livreurs)
+        .where(eq(livreurs.utilisateurId, ctx.user.id));
+
+      if (!profilLivreur || profilLivreur.statutValidation !== "valide") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Profil livreur non validé" });
+      }
+
+      const [commande] = await db
+        .update(commandesGaz)
+        .set({
+          statut: "en_livraison",
+          livreurId: profilLivreur.id,
+        })
+        .where(and(eq(commandesGaz.id, input.commandeId), eq(commandesGaz.statut, "confirmee")))
+        .returning();
+
+      if (!commande) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "Cette livraison a déjà été prise par un autre livreur",
+        });
+      }
+
+      await db.insert(notifications).values({
+        utilisateurId: commande.clientId,
+        titre: "Livreur en route",
+        message: "Un livreur a accepté votre commande et est en route.",
+        type: "commande_gaz",
+      });
+
+      return commande;
+    }),
+
+  marquerLivree: requireRole("boutique", "admin", "livreur")
+    .input(z.object({ commandeId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      let filtreProprietaire = undefined;
+
+      if (ctx.user.role === "livreur") {
+        const [profilLivreur] = await db
+          .select()
+          .from(livreurs)
+          .where(eq(livreurs.utilisateurId, ctx.user.id));
+
+        if (!profilLivreur) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Profil livreur introuvable" });
+        }
+        filtreProprietaire = eq(commandesGaz.livreurId, profilLivreur.id);
+      }
+
       const [commande] = await db
         .update(commandesGaz)
         .set({ statut: "livree", livreeAt: new Date() })
         .where(
           and(
             eq(commandesGaz.id, input.commandeId),
-            eq(commandesGaz.statut, "en_livraison")
+            eq(commandesGaz.statut, "en_livraison"),
+            filtreProprietaire
           )
         )
         .returning();
@@ -175,8 +269,16 @@ export const gazRouter = router({
       if (!commande) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "Transition de statut invalide",
+          message: "Transition de statut invalide ou commande non attribuée à ce livreur",
         });
+      }
+
+      // Incrémente le compteur de livraisons du livreur si applicable
+      if (commande.livreurId) {
+        await db
+          .update(livreurs)
+          .set({ nombreLivraisons: sql`${livreurs.nombreLivraisons} + 1` })
+          .where(eq(livreurs.id, commande.livreurId));
       }
 
       return commande;
