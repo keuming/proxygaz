@@ -168,6 +168,60 @@ export const adminRouter = router({
       return ramasseur;
     }),
 
+  // Création directe d'un compte ramasseur par l'admin (auto-validé, pas de mobile requis)
+  creerRamasseur: adminProcedure
+    .input(
+      z.object({
+        nom: z.string().min(2),
+        telephone: z.string().min(8),
+        motDePasse: z.string().min(6),
+        ville: z.string().min(2),
+        type: z.enum(["particulier", "societe"]),
+        nomSociete: z.string().optional(),
+        zonesCouvertes: z.array(z.string()).min(1),
+        vehicule: z.string().optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const bcrypt = (await import("bcryptjs")).default;
+
+      const existant = await db
+        .select()
+        .from(utilisateurs)
+        .where(eq(utilisateurs.telephone, input.telephone));
+
+      if (existant.length > 0) {
+        throw new TRPCError({ code: "CONFLICT", message: "Ce numéro est déjà utilisé" });
+      }
+
+      const motDePasseHash = await bcrypt.hash(input.motDePasse, 10);
+
+      const [user] = await db
+        .insert(utilisateurs)
+        .values({
+          nom: input.nom,
+          telephone: input.telephone,
+          motDePasseHash,
+          ville: input.ville,
+          role: "ramasseur",
+        })
+        .returning();
+
+      const [ramasseur] = await db
+        .insert(ramasseurs)
+        .values({
+          utilisateurId: user.id,
+          type: input.type,
+          nomSociete: input.nomSociete,
+          zonesCouvertes: input.zonesCouvertes,
+          vehicule: input.vehicule,
+          statutValidation: "valide", // créé par l'admin : validé d'office
+        })
+        .returning();
+
+      return { utilisateur: user, ramasseur };
+    }),
+
   // ---- Livreurs de gaz ----
   listLivreurs: adminProcedure.query(async () => {
     const rows = await db
@@ -196,6 +250,56 @@ export const adminRouter = router({
         throw new TRPCError({ code: "NOT_FOUND", message: "Livreur introuvable" });
       }
       return livreur;
+    }),
+
+  // Création directe d'un compte livreur par l'admin (auto-validé, pas de mobile requis)
+  creerLivreur: adminProcedure
+    .input(
+      z.object({
+        nom: z.string().min(2),
+        telephone: z.string().min(8),
+        motDePasse: z.string().min(6),
+        ville: z.string().min(2),
+        vehicule: z.string().optional(),
+        zonesCouvertes: z.array(z.string()).min(1),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const bcrypt = (await import("bcryptjs")).default;
+
+      const existant = await db
+        .select()
+        .from(utilisateurs)
+        .where(eq(utilisateurs.telephone, input.telephone));
+
+      if (existant.length > 0) {
+        throw new TRPCError({ code: "CONFLICT", message: "Ce numéro est déjà utilisé" });
+      }
+
+      const motDePasseHash = await bcrypt.hash(input.motDePasse, 10);
+
+      const [user] = await db
+        .insert(utilisateurs)
+        .values({
+          nom: input.nom,
+          telephone: input.telephone,
+          motDePasseHash,
+          ville: input.ville,
+          role: "livreur",
+        })
+        .returning();
+
+      const [livreur] = await db
+        .insert(livreurs)
+        .values({
+          utilisateurId: user.id,
+          vehicule: input.vehicule,
+          zonesCouvertes: input.zonesCouvertes,
+          statutValidation: "valide", // créé par l'admin : validé d'office
+        })
+        .returning();
+
+      return { utilisateur: user, livreur };
     }),
 
   // ---- Marques de gaz (référentiel) ----

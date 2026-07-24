@@ -157,6 +157,62 @@ export const authRouter = router({
       };
     }),
 
+  inscriptionBoutique: publicProcedure
+    .input(
+      z.object({
+        nom: z.string().min(2),
+        telephone: z.string().min(8),
+        motDePasse: z.string().min(6),
+        nomBoutique: z.string().min(2),
+        ville: z.string().min(2),
+        commune: z.string().optional(),
+        adresse: z.string().optional(),
+        latitude: z.number().optional(),
+        longitude: z.number().optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const existant = await db
+        .select()
+        .from(utilisateurs)
+        .where(eq(utilisateurs.telephone, input.telephone));
+
+      if (existant.length > 0) {
+        throw new TRPCError({ code: "CONFLICT", message: "Ce numéro est déjà utilisé" });
+      }
+
+      const motDePasseHash = await bcrypt.hash(input.motDePasse, 10);
+
+      const [user] = await db
+        .insert(utilisateurs)
+        .values({
+          nom: input.nom,
+          telephone: input.telephone,
+          motDePasseHash,
+          ville: input.ville,
+          commune: input.commune,
+          role: "boutique",
+        })
+        .returning();
+
+      await db.insert(boutiquesGaz).values({
+        utilisateurId: user.id,
+        nomBoutique: input.nomBoutique,
+        ville: input.ville,
+        commune: input.commune,
+        adresse: input.adresse,
+        latitude: input.latitude,
+        longitude: input.longitude,
+        statutValidation: "en_attente", // auto-inscription : validation admin requise
+      });
+
+      return {
+        token: genererToken(user),
+        user: { id: user.id, nom: user.nom, role: user.role },
+        message: "Inscription reçue, en attente de validation par l'équipe ProxiGaz",
+      };
+    }),
+
   connexion: publicProcedure
     .input(z.object({ telephone: z.string(), motDePasse: z.string() }))
     .mutation(async ({ input }) => {
