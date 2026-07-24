@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { and, eq, gt, sql } from "drizzle-orm";
-import { router, protectedProcedure, requireRole } from "../trpc";
-import { db, schema } from "../db";
+import { router, protectedProcedure, requireRole } from "../trpc.js";
+import { db, schema } from "../db/index.js";
 
 const { commandesGaz, marquesGaz, boutiquesGaz, stockBoutique, notifications } = schema;
 

@@ -1,8 +1,8 @@
-import { router } from "../trpc";
-import { authRouter } from "./auth";
-import { gazRouter } from "./gaz";
-import { ramassageRouter } from "./ramassage";
-import { paiementsRouter } from "./paiements";
+import { router } from "../trpc.js";
+import { authRouter } from "./auth.js";
+import { gazRouter } from "./gaz.js";
+import { ramassageRouter } from "./ramassage.js";
+import { paiementsRouter } from "./paiements.js";
 
 export const appRouter = router({
   auth: authRouter,

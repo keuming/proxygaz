@@ -3,8 +3,8 @@ import { TRPCError } from "@trpc/server";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { eq } from "drizzle-orm";
-import { router, publicProcedure } from "../trpc";
-import { db, schema } from "../db";
+import { router, publicProcedure } from "../trpc.js";
+import { db, schema } from "../db/index.js";
 
 const { utilisateurs, ramasseurs, boutiquesGaz } = schema;
 

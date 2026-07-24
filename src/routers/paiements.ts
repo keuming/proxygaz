@@ -1,9 +1,9 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
-import { router, protectedProcedure } from "../trpc";
-import { db, schema } from "../db";
-import { initierPaiement, verifierStatutPaiement } from "../services/hub2";
+import { router, protectedProcedure } from "../trpc.js";
+import { db, schema } from "../db/index.js";
+import { initierPaiement, verifierStatutPaiement } from "../services/hub2.js";
 
 const { paiements, commandesGaz, demandesRamassage, utilisateurs } = schema;
 

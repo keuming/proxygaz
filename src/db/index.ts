@@ -1,6 +1,6 @@
 import { neon } from "@neondatabase/serverless";
 import { drizzle } from "drizzle-orm/neon-http";
-import * as schemaImport from "./schema";
+import * as schemaImport from "./schema.js";
 
 if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL manquant dans les variables d'environnement");

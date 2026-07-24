@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { and, eq, sql } from "drizzle-orm";
-import { router, protectedProcedure, requireRole } from "../trpc";
-import { db, schema } from "../db";
+import { router, protectedProcedure, requireRole } from "../trpc.js";
+import { db, schema } from "../db/index.js";
 
 const { demandesRamassage, ramasseurs, notifications } = schema;
 

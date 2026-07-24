@@ -3,10 +3,10 @@ import express from "express";
 import cors from "cors";
 import * as trpcExpress from "@trpc/server/adapters/express";
 import { eq } from "drizzle-orm";
-import { appRouter } from "./routers";
-import { createContext } from "./trpc";
-import { db, schema } from "./db";
-import { executerMigrations } from "./services/migrate";
+import { appRouter } from "./routers/index.js";
+import { createContext } from "./trpc.js";
+import { db, schema } from "./db/index.js";
+import { executerMigrations } from "./services/migrate.js";
 
 const app = express();
 
