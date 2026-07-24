@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { and, eq, gt, desc, sql } from "drizzle-orm";
-import { router, protectedProcedure, requireRole } from "../trpc.js";
+import { randomUUID } from "node:crypto";
+import { router, publicProcedure, protectedProcedure, requireRole } from "../trpc.js";
 import { db, schema } from "../db/index.js";
 
 const {
@@ -87,8 +88,35 @@ export const gazRouter = router({
     }),
 
   // Liste des marques/tailles disponibles (catalogue public, référentiel global)
-  catalogue: protectedProcedure.query(async () => {
+  catalogue: publicProcedure.query(async () => {
     return db.select().from(marquesGaz).where(eq(marquesGaz.actif, true));
+  }),
+
+  // Catalogue enrichi de la disponibilité totale tous points de vente confondus —
+  // utilisé pour la page "liste des produits" (parcours d'achat sans compte).
+  catalogueDisponibilite: publicProcedure.query(async () => {
+    const marques = await db.select().from(marquesGaz).where(eq(marquesGaz.actif, true));
+
+    const disponibilites = await db
+      .select({
+        marqueGazId: stockBoutique.marqueGazId,
+        totalDisponible: sql<number>`sum(${stockBoutique.quantiteDisponible})`,
+        nbBoutiques: sql<number>`count(distinct ${stockBoutique.boutiqueId}) filter (where ${stockBoutique.quantiteDisponible} > 0)`,
+      })
+      .from(stockBoutique)
+      .innerJoin(boutiquesGaz, eq(stockBoutique.boutiqueId, boutiquesGaz.id))
+      .where(eq(boutiquesGaz.statutValidation, "valide"))
+      .groupBy(stockBoutique.marqueGazId);
+
+    const dispoParMarque = new Map(
+      disponibilites.map((d) => [d.marqueGazId, { total: Number(d.totalDisponible), nbBoutiques: Number(d.nbBoutiques) }])
+    );
+
+    return marques.map((m) => ({
+      ...m,
+      totalDisponible: dispoParMarque.get(m.id)?.total ?? 0,
+      nbBoutiques: dispoParMarque.get(m.id)?.nbBoutiques ?? 0,
+    }));
   }),
 
   // Trouve les boutiques ayant du stock pour une marque donnée, proches du client
@@ -111,21 +139,84 @@ export const gazRouter = router({
         );
     }),
 
-  // Créer une commande de bouteille de gaz
-  creerCommande: protectedProcedure
+  // Créer une commande de bouteille de gaz — fonctionne connecté OU en tant qu'invité.
+  // Si l'utilisateur n'est pas connecté, un compte client léger est créé silencieusement
+  // (ou réutilisé s'il existe déjà pour ce numéro) afin de permettre le suivi ultérieur,
+  // sans jamais imposer d'écran d'inscription au client.
+  creerCommande: publicProcedure
     .input(
       z.object({
         marqueGazId: z.string().uuid(),
-        boutiqueId: z.string().uuid().optional(), // si non fourni, assignation auto par proximité (TODO)
+        boutiqueId: z.string().uuid().optional(), // si non fourni, assignation auto à la première boutique en stock
         quantite: z.number().int().min(1).default(1),
         echangeBouteilleVide: z.boolean().default(true),
         adresseLivraison: z.string().min(5),
         latitude: z.number().optional(),
         longitude: z.number().optional(),
         notes: z.string().optional(),
+        // Renseignés uniquement si la personne n'est pas déjà connectée
+        nomClient: z.string().min(2).optional(),
+        telephoneClient: z.string().min(8).optional(),
+        motDePasseClient: z.string().min(6).optional(), // optionnel : pour créer un vrai compte
       })
     )
     .mutation(async ({ ctx, input }) => {
+      let clientId: string;
+      let tokenGenere: string | undefined;
+      let userGenere: { id: string; nom: string; role: string } | undefined;
+
+      if (ctx.user) {
+        clientId = ctx.user.id;
+      } else {
+        if (!input.nomClient || !input.telephoneClient) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Nom et téléphone requis pour commander sans compte",
+          });
+        }
+
+        const [existant] = await db
+          .select()
+          .from(schema.utilisateurs)
+          .where(eq(schema.utilisateurs.telephone, input.telephoneClient));
+
+        if (existant) {
+          clientId = existant.id;
+        } else {
+          const bcrypt = (await import("bcryptjs")).default;
+          const motDePasseHash = await bcrypt.hash(
+            input.motDePasseClient ?? randomUUID(),
+            10
+          );
+
+          const [nouveauClient] = await db
+            .insert(schema.utilisateurs)
+            .values({
+              nom: input.nomClient,
+              telephone: input.telephoneClient,
+              motDePasseHash,
+              role: "client",
+            })
+            .returning();
+          clientId = nouveauClient.id;
+        }
+
+        // Génère un jeton de session pour que le suivi de commande fonctionne
+        // immédiatement après, sans que la personne ait eu à se connecter.
+        const jwt = (await import("jsonwebtoken")).default;
+        const [utilisateurComplet] = await db
+          .select()
+          .from(schema.utilisateurs)
+          .where(eq(schema.utilisateurs.id, clientId));
+
+        tokenGenere = jwt.sign(
+          { id: utilisateurComplet.id, role: utilisateurComplet.role, telephone: utilisateurComplet.telephone },
+          process.env.JWT_SECRET as string,
+          { expiresIn: "30d" }
+        );
+        userGenere = { id: utilisateurComplet.id, nom: utilisateurComplet.nom, role: utilisateurComplet.role };
+      }
+
       const [marque] = await db
         .select()
         .from(marquesGaz)
@@ -135,15 +226,40 @@ export const gazRouter = router({
         throw new TRPCError({ code: "NOT_FOUND", message: "Marque de gaz introuvable" });
       }
 
+      // Assignation automatique à la première boutique disposant du stock, si non précisée
+      let boutiqueId = input.boutiqueId;
+      if (!boutiqueId) {
+        const [boutiqueAuto] = await db
+          .select({ id: boutiquesGaz.id })
+          .from(stockBoutique)
+          .innerJoin(boutiquesGaz, eq(stockBoutique.boutiqueId, boutiquesGaz.id))
+          .where(
+            and(
+              eq(stockBoutique.marqueGazId, input.marqueGazId),
+              gt(stockBoutique.quantiteDisponible, 0),
+              eq(boutiquesGaz.statutValidation, "valide")
+            )
+          )
+          .limit(1);
+
+        if (!boutiqueAuto) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Aucune boutique n'a ce produit en stock actuellement",
+          });
+        }
+        boutiqueId = boutiqueAuto.id;
+      }
+
       const prixUnitaire = parseFloat(marque.prixRecharge);
       const prixTotal = prixUnitaire * input.quantite;
 
       const [commande] = await db
         .insert(commandesGaz)
         .values({
-          clientId: ctx.user.id,
+          clientId,
           marqueGazId: input.marqueGazId,
-          boutiqueId: input.boutiqueId,
+          boutiqueId,
           quantite: input.quantite,
           echangeBouteilleVide: input.echangeBouteilleVide,
           adresseLivraison: input.adresseLivraison,
@@ -155,7 +271,7 @@ export const gazRouter = router({
         })
         .returning();
 
-      return commande;
+      return { commande, token: tokenGenere, user: userGenere };
     }),
 
   // La boutique confirme la commande et décrémente son stock (transaction atomique)
