@@ -1,10 +1,39 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { and, eq, gt, sql } from "drizzle-orm";
+import { and, eq, gt, desc, sql } from "drizzle-orm";
 import { router, protectedProcedure, requireRole } from "../trpc.js";
 import { db, schema } from "../db/index.js";
 
-const { commandesGaz, marquesGaz, boutiquesGaz, stockBoutique, livreurs, notifications } = schema;
+const {
+  commandesGaz,
+  marquesGaz,
+  boutiquesGaz,
+  stockBoutique,
+  livreurs,
+  notifications,
+  fournisseurs,
+  approvisionnements,
+  mouvementsStock,
+  statutCommandeGazEnum,
+} = schema;
+
+/**
+ * Enregistre un mouvement dans le registre de stock (traçabilité comptable).
+ * `quantite` est signée : positive pour une entrée, négative pour une sortie.
+ * Ne modifie pas le stock lui-même — c'est l'appelant qui gère la mise à jour de
+ * stockBoutique.quantiteDisponible ; cette fonction se contente de journaliser.
+ */
+async function enregistrerMouvement(params: {
+  boutiqueId: string;
+  marqueGazId: string;
+  typeMouvement: "entree_fournisseur" | "vente" | "ajustement" | "retour";
+  quantite: number;
+  soldeApres: number;
+  reference?: string;
+  notes?: string;
+}) {
+  await db.insert(mouvementsStock).values(params);
+}
 
 export const gazRouter = router({
   // Liste des marques/tailles disponibles (catalogue public)
@@ -117,6 +146,16 @@ export const gazRouter = router({
           message: "Stock insuffisant pour confirmer cette commande",
         });
       }
+
+      await enregistrerMouvement({
+        boutiqueId: commande.boutiqueId!,
+        marqueGazId: commande.marqueGazId,
+        typeMouvement: "vente",
+        quantite: -commande.quantite,
+        soldeApres: stockMisAJour.quantiteDisponible,
+        reference: commande.id,
+        notes: `Commande confirmée`,
+      });
 
       const [commandeConfirmee] = await db
         .update(commandesGaz)
@@ -284,6 +323,116 @@ export const gazRouter = router({
       return commande;
     }),
 
+  // Livraison tentée mais échouée (client absent, adresse erronée, refus...)
+  marquerNonLivree: requireRole("boutique", "admin", "livreur")
+    .input(z.object({ commandeId: z.string().uuid(), raison: z.string().min(3) }))
+    .mutation(async ({ ctx, input }) => {
+      let filtreProprietaire = undefined;
+
+      if (ctx.user.role === "livreur") {
+        const [profilLivreur] = await db
+          .select()
+          .from(livreurs)
+          .where(eq(livreurs.utilisateurId, ctx.user.id));
+        if (!profilLivreur) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Profil livreur introuvable" });
+        }
+        filtreProprietaire = eq(commandesGaz.livreurId, profilLivreur.id);
+      }
+
+      const [commande] = await db
+        .update(commandesGaz)
+        .set({ statut: "non_livree", raisonNonLivraison: input.raison })
+        .where(
+          and(
+            eq(commandesGaz.id, input.commandeId),
+            eq(commandesGaz.statut, "en_livraison"),
+            filtreProprietaire
+          )
+        )
+        .returning();
+
+      if (!commande) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Transition de statut invalide ou commande non attribuée",
+        });
+      }
+
+      await db.insert(notifications).values({
+        utilisateurId: commande.clientId,
+        titre: "Livraison non aboutie",
+        message: `Votre commande n'a pas pu être livrée : ${input.raison}`,
+        type: "commande_gaz",
+      });
+
+      return commande;
+    }),
+
+  // Annulation (client sur sa propre commande en_attente, ou boutique/admin à tout moment avant livraison)
+  annulerCommande: protectedProcedure
+    .input(z.object({ commandeId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      const [commande] = await db
+        .select()
+        .from(commandesGaz)
+        .where(eq(commandesGaz.id, input.commandeId));
+
+      if (!commande) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Commande introuvable" });
+      }
+
+      const estProprietaire = commande.clientId === ctx.user.id;
+      const estGestionnaire = ["boutique", "admin"].includes(ctx.user.role);
+      if (!estProprietaire && !estGestionnaire) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Action non autorisée" });
+      }
+
+      if (!["en_attente", "confirmee"].includes(commande.statut)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Cette commande ne peut plus être annulée (déjà en livraison ou terminée)",
+        });
+      }
+
+      // Si le stock avait été décrémenté (commande confirmée), on le restitue
+      if (commande.statut === "confirmee" && commande.boutiqueId) {
+        const [stockRestitue] = await db
+          .update(stockBoutique)
+          .set({
+            quantiteDisponible: sql`${stockBoutique.quantiteDisponible} + ${commande.quantite}`,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(stockBoutique.boutiqueId, commande.boutiqueId),
+              eq(stockBoutique.marqueGazId, commande.marqueGazId)
+            )
+          )
+          .returning();
+
+        if (stockRestitue) {
+          await enregistrerMouvement({
+            boutiqueId: commande.boutiqueId,
+            marqueGazId: commande.marqueGazId,
+            typeMouvement: "retour",
+            quantite: commande.quantite,
+            soldeApres: stockRestitue.quantiteDisponible,
+            reference: commande.id,
+            notes: "Commande annulée après confirmation, stock restitué",
+          });
+        }
+      }
+
+      const [commandeAnnulee] = await db
+        .update(commandesGaz)
+        .set({ statut: "annulee" })
+        .where(eq(commandesGaz.id, input.commandeId))
+        .returning();
+
+      return commandeAnnulee;
+    }),
+
   mesCommandes: protectedProcedure.query(async ({ ctx }) => {
     return db
       .select()
@@ -293,28 +442,35 @@ export const gazRouter = router({
 
   // ---- Espace boutique (self-service) ----
 
-  commandesBoutique: requireRole("boutique").query(async ({ ctx }) => {
-    const [boutique] = await db
-      .select()
-      .from(boutiquesGaz)
-      .where(eq(boutiquesGaz.utilisateurId, ctx.user.id));
+  commandesBoutique: requireRole("boutique")
+    .input(z.object({ statut: z.enum(statutCommandeGazEnum.enumValues).optional() }).optional())
+    .query(async ({ ctx, input }) => {
+      const [boutique] = await db
+        .select()
+        .from(boutiquesGaz)
+        .where(eq(boutiquesGaz.utilisateurId, ctx.user.id));
 
-    if (!boutique) {
-      throw new TRPCError({ code: "NOT_FOUND", message: "Profil boutique introuvable" });
-    }
+      if (!boutique) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Profil boutique introuvable" });
+      }
 
-    const rows = await db
-      .select({
-        commande: commandesGaz,
-        clientNom: schema.utilisateurs.nom,
-        clientTelephone: schema.utilisateurs.telephone,
-      })
-      .from(commandesGaz)
-      .innerJoin(schema.utilisateurs, eq(commandesGaz.clientId, schema.utilisateurs.id))
-      .where(eq(commandesGaz.boutiqueId, boutique.id));
+      const rows = await db
+        .select({
+          commande: commandesGaz,
+          clientNom: schema.utilisateurs.nom,
+          clientTelephone: schema.utilisateurs.telephone,
+        })
+        .from(commandesGaz)
+        .innerJoin(schema.utilisateurs, eq(commandesGaz.clientId, schema.utilisateurs.id))
+        .where(
+          input?.statut
+            ? and(eq(commandesGaz.boutiqueId, boutique.id), eq(commandesGaz.statut, input.statut))
+            : eq(commandesGaz.boutiqueId, boutique.id)
+        )
+        .orderBy(desc(commandesGaz.createdAt));
 
-    return rows.map((r) => ({ ...r.commande, clientNom: r.clientNom, clientTelephone: r.clientTelephone }));
-  }),
+      return rows.map((r) => ({ ...r.commande, clientNom: r.clientNom, clientTelephone: r.clientTelephone }));
+    }),
 
   monStock: requireRole("boutique").query(async ({ ctx }) => {
     const [boutique] = await db
@@ -340,7 +496,13 @@ export const gazRouter = router({
   }),
 
   majMonStock: requireRole("boutique")
-    .input(z.object({ marqueGazId: z.string().uuid(), quantiteDisponible: z.number().int().nonnegative() }))
+    .input(
+      z.object({
+        marqueGazId: z.string().uuid(),
+        quantiteDisponible: z.number().int().nonnegative(),
+        seuilAlerte: z.number().int().nonnegative().optional(),
+      })
+    )
     .mutation(async ({ ctx, input }) => {
       const [boutique] = await db
         .select()
@@ -362,11 +524,27 @@ export const gazRouter = router({
         );
 
       if (existant) {
+        const ecart = input.quantiteDisponible - existant.quantiteDisponible;
         const [maj] = await db
           .update(stockBoutique)
-          .set({ quantiteDisponible: input.quantiteDisponible, updatedAt: new Date() })
+          .set({
+            quantiteDisponible: input.quantiteDisponible,
+            seuilAlerte: input.seuilAlerte ?? existant.seuilAlerte,
+            updatedAt: new Date(),
+          })
           .where(eq(stockBoutique.id, existant.id))
           .returning();
+
+        if (ecart !== 0) {
+          await enregistrerMouvement({
+            boutiqueId: boutique.id,
+            marqueGazId: input.marqueGazId,
+            typeMouvement: "ajustement",
+            quantite: ecart,
+            soldeApres: input.quantiteDisponible,
+            notes: "Ajustement manuel d'inventaire",
+          });
+        }
         return maj;
       }
 
@@ -376,10 +554,220 @@ export const gazRouter = router({
           boutiqueId: boutique.id,
           marqueGazId: input.marqueGazId,
           quantiteDisponible: input.quantiteDisponible,
+          seuilAlerte: input.seuilAlerte ?? 5,
         })
         .returning();
+
+      if (input.quantiteDisponible > 0) {
+        await enregistrerMouvement({
+          boutiqueId: boutique.id,
+          marqueGazId: input.marqueGazId,
+          typeMouvement: "ajustement",
+          quantite: input.quantiteDisponible,
+          soldeApres: input.quantiteDisponible,
+          notes: "Stock initial",
+        });
+      }
+
       return créé;
     }),
+
+  // ---- Fournisseurs (self-service boutique) ----
+
+  mesFournisseurs: requireRole("boutique").query(async ({ ctx }) => {
+    const [boutique] = await db
+      .select()
+      .from(boutiquesGaz)
+      .where(eq(boutiquesGaz.utilisateurId, ctx.user.id));
+    if (!boutique) throw new TRPCError({ code: "NOT_FOUND", message: "Profil boutique introuvable" });
+
+    return db
+      .select()
+      .from(fournisseurs)
+      .where(eq(fournisseurs.boutiqueId, boutique.id))
+      .orderBy(desc(fournisseurs.createdAt));
+  }),
+
+  creerFournisseur: requireRole("boutique")
+    .input(
+      z.object({
+        nom: z.string().min(2),
+        telephone: z.string().optional(),
+        adresse: z.string().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [boutique] = await db
+        .select()
+        .from(boutiquesGaz)
+        .where(eq(boutiquesGaz.utilisateurId, ctx.user.id));
+      if (!boutique) throw new TRPCError({ code: "NOT_FOUND", message: "Profil boutique introuvable" });
+
+      const [fournisseur] = await db
+        .insert(fournisseurs)
+        .values({ boutiqueId: boutique.id, nom: input.nom, telephone: input.telephone, adresse: input.adresse })
+        .returning();
+      return fournisseur;
+    }),
+
+  // ---- Approvisionnements (bons de commande fournisseur) ----
+
+  mesApprovisionnements: requireRole("boutique").query(async ({ ctx }) => {
+    const [boutique] = await db
+      .select()
+      .from(boutiquesGaz)
+      .where(eq(boutiquesGaz.utilisateurId, ctx.user.id));
+    if (!boutique) throw new TRPCError({ code: "NOT_FOUND", message: "Profil boutique introuvable" });
+
+    const rows = await db
+      .select({
+        appro: approvisionnements,
+        fournisseurNom: fournisseurs.nom,
+        marqueNom: marquesGaz.nom,
+        marqueTaille: marquesGaz.taille,
+      })
+      .from(approvisionnements)
+      .innerJoin(fournisseurs, eq(approvisionnements.fournisseurId, fournisseurs.id))
+      .innerJoin(marquesGaz, eq(approvisionnements.marqueGazId, marquesGaz.id))
+      .where(eq(approvisionnements.boutiqueId, boutique.id))
+      .orderBy(desc(approvisionnements.dateCommande));
+
+    return rows.map((r) => ({
+      ...r.appro,
+      fournisseurNom: r.fournisseurNom,
+      marqueNom: r.marqueNom,
+      marqueTaille: r.marqueTaille,
+    }));
+  }),
+
+  creerApprovisionnement: requireRole("boutique")
+    .input(
+      z.object({
+        fournisseurId: z.string().uuid(),
+        marqueGazId: z.string().uuid(),
+        quantite: z.number().int().positive(),
+        prixAchatUnitaire: z.number().nonnegative().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [boutique] = await db
+        .select()
+        .from(boutiquesGaz)
+        .where(eq(boutiquesGaz.utilisateurId, ctx.user.id));
+      if (!boutique) throw new TRPCError({ code: "NOT_FOUND", message: "Profil boutique introuvable" });
+
+      const [appro] = await db
+        .insert(approvisionnements)
+        .values({
+          boutiqueId: boutique.id,
+          fournisseurId: input.fournisseurId,
+          marqueGazId: input.marqueGazId,
+          quantite: input.quantite,
+          prixAchatUnitaire: input.prixAchatUnitaire?.toString(),
+          statut: "commande",
+        })
+        .returning();
+      return appro;
+    }),
+
+  // Réception d'un bon de commande : incrémente le stock et journalise l'entrée
+  receptionnerApprovisionnement: requireRole("boutique")
+    .input(z.object({ approvisionnementId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      const [boutique] = await db
+        .select()
+        .from(boutiquesGaz)
+        .where(eq(boutiquesGaz.utilisateurId, ctx.user.id));
+      if (!boutique) throw new TRPCError({ code: "NOT_FOUND", message: "Profil boutique introuvable" });
+
+      const [appro] = await db
+        .update(approvisionnements)
+        .set({ statut: "receptionne", dateReception: new Date() })
+        .where(
+          and(
+            eq(approvisionnements.id, input.approvisionnementId),
+            eq(approvisionnements.boutiqueId, boutique.id),
+            eq(approvisionnements.statut, "commande")
+          )
+        )
+        .returning();
+
+      if (!appro) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Bon de commande introuvable ou déjà réceptionné",
+        });
+      }
+
+      const [existant] = await db
+        .select()
+        .from(stockBoutique)
+        .where(
+          and(
+            eq(stockBoutique.boutiqueId, boutique.id),
+            eq(stockBoutique.marqueGazId, appro.marqueGazId)
+          )
+        );
+
+      let nouveauSolde: number;
+      if (existant) {
+        const [maj] = await db
+          .update(stockBoutique)
+          .set({
+            quantiteDisponible: sql`${stockBoutique.quantiteDisponible} + ${appro.quantite}`,
+            updatedAt: new Date(),
+          })
+          .where(eq(stockBoutique.id, existant.id))
+          .returning();
+        nouveauSolde = maj.quantiteDisponible;
+      } else {
+        const [créé] = await db
+          .insert(stockBoutique)
+          .values({
+            boutiqueId: boutique.id,
+            marqueGazId: appro.marqueGazId,
+            quantiteDisponible: appro.quantite,
+          })
+          .returning();
+        nouveauSolde = créé.quantiteDisponible;
+      }
+
+      await enregistrerMouvement({
+        boutiqueId: boutique.id,
+        marqueGazId: appro.marqueGazId,
+        typeMouvement: "entree_fournisseur",
+        quantite: appro.quantite,
+        soldeApres: nouveauSolde,
+        reference: appro.id,
+        notes: "Réception d'un bon de commande fournisseur",
+      });
+
+      return appro;
+    }),
+
+  // ---- Registre des mouvements de stock (traçabilité, façon inventaire) ----
+
+  monHistoriqueStock: requireRole("boutique").query(async ({ ctx }) => {
+    const [boutique] = await db
+      .select()
+      .from(boutiquesGaz)
+      .where(eq(boutiquesGaz.utilisateurId, ctx.user.id));
+    if (!boutique) throw new TRPCError({ code: "NOT_FOUND", message: "Profil boutique introuvable" });
+
+    const rows = await db
+      .select({
+        mouvement: mouvementsStock,
+        marqueNom: marquesGaz.nom,
+        marqueTaille: marquesGaz.taille,
+      })
+      .from(mouvementsStock)
+      .innerJoin(marquesGaz, eq(mouvementsStock.marqueGazId, marquesGaz.id))
+      .where(eq(mouvementsStock.boutiqueId, boutique.id))
+      .orderBy(desc(mouvementsStock.createdAt))
+      .limit(200);
+
+    return rows.map((r) => ({ ...r.mouvement, marqueNom: r.marqueNom, marqueTaille: r.marqueTaille }));
+  }),
 
   // ---- Espace livreur (self-service) ----
 

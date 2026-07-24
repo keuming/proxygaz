@@ -38,11 +38,25 @@ export const statutValidationEnum = pgEnum("statut_validation", [
 ]);
 
 export const statutCommandeGazEnum = pgEnum("statut_commande_gaz", [
-  "en_attente",       // commande créée, en recherche de boutique
-  "confirmee",        // boutique a confirmé le stock
+  "en_attente",       // nouvelle commande, en recherche de boutique
+  "confirmee",        // en préparation : boutique a confirmé et décrémenté son stock
   "en_livraison",
   "livree",
+  "non_livree",       // tentative de livraison échouée (client absent, adresse erronée...)
   "annulee",
+]);
+
+export const typeMouvementStockEnum = pgEnum("type_mouvement_stock", [
+  "entree_fournisseur", // réception d'un approvisionnement
+  "vente",              // décrémenté suite à une commande confirmée
+  "ajustement",         // correction manuelle par la boutique (inventaire)
+  "retour",              // bouteille retournée / commande annulée après confirmation
+]);
+
+export const statutApprovisionnementEnum = pgEnum("statut_approvisionnement", [
+  "commande",     // bon de commande envoyé au fournisseur, pas encore reçu
+  "receptionne",  // marchandise reçue, stock incrémenté
+  "annule",
 ]);
 
 export const statutDemandeRamassageEnum = pgEnum("statut_demande_ramassage", [
@@ -125,7 +139,45 @@ export const stockBoutique = pgTable("stock_boutique", {
   marqueGazId: uuid("marque_gaz_id").references(() => marquesGaz.id).notNull(),
   quantiteDisponible: integer("quantite_disponible").notNull().default(0),
   quantitePleines: integer("quantite_pleines").notNull().default(0), // pour échange bouteille vide<->pleine
+  seuilAlerte: integer("seuil_alerte").notNull().default(5), // déclenche une alerte réappro sous ce seuil
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// Fournisseurs d'une boutique (dépôts centraux, distributeurs de marques)
+export const fournisseurs = pgTable("fournisseurs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  boutiqueId: uuid("boutique_id").references(() => boutiquesGaz.id).notNull(),
+  nom: varchar("nom", { length: 150 }).notNull(),
+  telephone: varchar("telephone", { length: 20 }),
+  adresse: text("adresse"),
+  actif: boolean("actif").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// Bons d'approvisionnement (commandes de réassort auprès d'un fournisseur)
+export const approvisionnements = pgTable("approvisionnements", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  boutiqueId: uuid("boutique_id").references(() => boutiquesGaz.id).notNull(),
+  fournisseurId: uuid("fournisseur_id").references(() => fournisseurs.id).notNull(),
+  marqueGazId: uuid("marque_gaz_id").references(() => marquesGaz.id).notNull(),
+  quantite: integer("quantite").notNull(),
+  prixAchatUnitaire: decimal("prix_achat_unitaire", { precision: 10, scale: 2 }),
+  statut: statutApprovisionnementEnum("statut").notNull().default("commande"),
+  dateCommande: timestamp("date_commande").defaultNow().notNull(),
+  dateReception: timestamp("date_reception"),
+});
+
+// Registre des mouvements de stock (traçabilité complète, façon inventaire comptable)
+export const mouvementsStock = pgTable("mouvements_stock", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  boutiqueId: uuid("boutique_id").references(() => boutiquesGaz.id).notNull(),
+  marqueGazId: uuid("marque_gaz_id").references(() => marquesGaz.id).notNull(),
+  typeMouvement: typeMouvementStockEnum("type_mouvement").notNull(),
+  quantite: integer("quantite").notNull(), // positif = entrée, négatif = sortie
+  soldeApres: integer("solde_apres").notNull(),
+  reference: varchar("reference", { length: 100 }), // id commande ou id approvisionnement lié
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
 // Livreurs de bouteilles de gaz (distincts des ramasseurs d'ordures)
@@ -156,6 +208,7 @@ export const commandesGaz = pgTable("commandes_gaz", {
   livreurNom: varchar("livreur_nom", { length: 120 }),
   livreurTelephone: varchar("livreur_telephone", { length: 20 }),
   notes: text("notes"),
+  raisonNonLivraison: text("raison_non_livraison"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   confirmedAt: timestamp("confirmed_at"),
   livreeAt: timestamp("livree_at"),
@@ -293,5 +346,39 @@ export const demandesRamassageRelations = relations(demandesRamassage, ({ one })
   ramasseur: one(ramasseurs, {
     fields: [demandesRamassage.ramasseurId],
     references: [ramasseurs.id],
+  }),
+}));
+
+export const fournisseursRelations = relations(fournisseurs, ({ one, many }) => ({
+  boutique: one(boutiquesGaz, {
+    fields: [fournisseurs.boutiqueId],
+    references: [boutiquesGaz.id],
+  }),
+  approvisionnements: many(approvisionnements),
+}));
+
+export const approvisionnementsRelations = relations(approvisionnements, ({ one }) => ({
+  boutique: one(boutiquesGaz, {
+    fields: [approvisionnements.boutiqueId],
+    references: [boutiquesGaz.id],
+  }),
+  fournisseur: one(fournisseurs, {
+    fields: [approvisionnements.fournisseurId],
+    references: [fournisseurs.id],
+  }),
+  marque: one(marquesGaz, {
+    fields: [approvisionnements.marqueGazId],
+    references: [marquesGaz.id],
+  }),
+}));
+
+export const mouvementsStockRelations = relations(mouvementsStock, ({ one }) => ({
+  boutique: one(boutiquesGaz, {
+    fields: [mouvementsStock.boutiqueId],
+    references: [boutiquesGaz.id],
+  }),
+  marque: one(marquesGaz, {
+    fields: [mouvementsStock.marqueGazId],
+    references: [marquesGaz.id],
   }),
 }));
