@@ -134,6 +134,30 @@ export const gazRouter = router({
       return commandeConfirmee;
     }),
 
+  // Transition confirmee -> en_livraison (déclenchée par la boutique quand le livreur part)
+  demarrerLivraison: requireRole("boutique", "admin")
+    .input(z.object({ commandeId: z.string().uuid(), livreurNom: z.string().optional(), livreurTelephone: z.string().optional() }))
+    .mutation(async ({ input }) => {
+      const [commande] = await db
+        .update(commandesGaz)
+        .set({
+          statut: "en_livraison",
+          livreurNom: input.livreurNom,
+          livreurTelephone: input.livreurTelephone,
+        })
+        .where(and(eq(commandesGaz.id, input.commandeId), eq(commandesGaz.statut, "confirmee")))
+        .returning();
+
+      if (!commande) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "La commande doit être confirmée avant de démarrer la livraison",
+        });
+      }
+
+      return commande;
+    }),
+
   marquerLivree: requireRole("boutique", "admin")
     .input(z.object({ commandeId: z.string().uuid() }))
     .mutation(async ({ input }) => {

@@ -125,6 +125,41 @@ export const ramassageRouter = router({
       return demandeMiseAJour;
     }),
 
+  // Transition validee -> en_cours (déclenchée par le ramasseur assigné quand il démarre)
+  demarrerRamassage: requireRole("ramasseur")
+    .input(z.object({ demandeId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      const [profilRamasseur] = await db
+        .select()
+        .from(ramasseurs)
+        .where(eq(ramasseurs.utilisateurId, ctx.user.id));
+
+      if (!profilRamasseur) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Profil ramasseur introuvable" });
+      }
+
+      const [demande] = await db
+        .update(demandesRamassage)
+        .set({ statut: "en_cours" })
+        .where(
+          and(
+            eq(demandesRamassage.id, input.demandeId),
+            eq(demandesRamassage.ramasseurId, profilRamasseur.id),
+            eq(demandesRamassage.statut, "validee")
+          )
+        )
+        .returning();
+
+      if (!demande) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "La demande doit être validée et vous être attribuée avant de démarrer",
+        });
+      }
+
+      return demande;
+    }),
+
   // Le ramasseur marque la demande comme terminée
   terminerDemande: requireRole("ramasseur")
     .input(z.object({ demandeId: z.string().uuid() }))

@@ -10,6 +10,8 @@ const {
   boutiquesGaz,
   ramasseurs,
   utilisateurs,
+  marquesGaz,
+  stockBoutique,
   statutCommandeGazEnum,
 } = schema;
 
@@ -158,5 +160,130 @@ export const adminRouter = router({
         throw new TRPCError({ code: "NOT_FOUND", message: "Ramasseur introuvable" });
       }
       return ramasseur;
+    }),
+
+  // ---- Marques de gaz (référentiel) ----
+  listMarquesGaz: adminProcedure.query(async () => {
+    return db.select().from(marquesGaz);
+  }),
+
+  creerMarqueGaz: adminProcedure
+    .input(
+      z.object({
+        nom: z.string().min(2),
+        taille: z.string().min(1),
+        prixRecharge: z.number().positive(),
+        prixConsigne: z.number().nonnegative().optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const [marque] = await db
+        .insert(marquesGaz)
+        .values({
+          nom: input.nom,
+          taille: input.taille,
+          prixRecharge: input.prixRecharge.toString(),
+          prixConsigne: input.prixConsigne?.toString(),
+        })
+        .returning();
+      return marque;
+    }),
+
+  // ---- Création d'un compte boutique (par l'admin, auto-validé) ----
+  creerBoutique: adminProcedure
+    .input(
+      z.object({
+        nom: z.string().min(2),
+        telephone: z.string().min(8),
+        motDePasse: z.string().min(6),
+        nomBoutique: z.string().min(2),
+        ville: z.string().min(2),
+        commune: z.string().optional(),
+        adresse: z.string().optional(),
+        latitude: z.number().optional(),
+        longitude: z.number().optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const bcrypt = (await import("bcryptjs")).default;
+
+      const existant = await db
+        .select()
+        .from(utilisateurs)
+        .where(eq(utilisateurs.telephone, input.telephone));
+
+      if (existant.length > 0) {
+        throw new TRPCError({ code: "CONFLICT", message: "Ce numéro est déjà utilisé" });
+      }
+
+      const motDePasseHash = await bcrypt.hash(input.motDePasse, 10);
+
+      const [user] = await db
+        .insert(utilisateurs)
+        .values({
+          nom: input.nom,
+          telephone: input.telephone,
+          motDePasseHash,
+          ville: input.ville,
+          commune: input.commune,
+          role: "boutique",
+        })
+        .returning();
+
+      const [boutique] = await db
+        .insert(boutiquesGaz)
+        .values({
+          utilisateurId: user.id,
+          nomBoutique: input.nomBoutique,
+          ville: input.ville,
+          commune: input.commune,
+          adresse: input.adresse,
+          latitude: input.latitude,
+          longitude: input.longitude,
+          statutValidation: "valide", // créée par l'admin : validée d'office
+        })
+        .returning();
+
+      return { utilisateur: user, boutique };
+    }),
+
+  // ---- Gestion du stock d'une boutique ----
+  majStock: adminProcedure
+    .input(
+      z.object({
+        boutiqueId: z.string().uuid(),
+        marqueGazId: z.string().uuid(),
+        quantiteDisponible: z.number().int().nonnegative(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const [existant] = await db
+        .select()
+        .from(stockBoutique)
+        .where(
+          and(
+            eq(stockBoutique.boutiqueId, input.boutiqueId),
+            eq(stockBoutique.marqueGazId, input.marqueGazId)
+          )
+        );
+
+      if (existant) {
+        const [maj] = await db
+          .update(stockBoutique)
+          .set({ quantiteDisponible: input.quantiteDisponible, updatedAt: new Date() })
+          .where(eq(stockBoutique.id, existant.id))
+          .returning();
+        return maj;
+      }
+
+      const [créé] = await db
+        .insert(stockBoutique)
+        .values({
+          boutiqueId: input.boutiqueId,
+          marqueGazId: input.marqueGazId,
+          quantiteDisponible: input.quantiteDisponible,
+        })
+        .returning();
+      return créé;
     }),
 });
