@@ -36,7 +36,57 @@ async function enregistrerMouvement(params: {
 }
 
 export const gazRouter = router({
-  // Liste des marques/tailles disponibles (catalogue public)
+  // Liste des boutiques (façon "liste de restaurants") — parcours en premier, avant de choisir un produit
+  boutiquesProches: protectedProcedure
+    .input(z.object({ ville: z.string().optional(), commune: z.string().optional() }).optional())
+    .query(async ({ input }) => {
+      const conditions = [eq(boutiquesGaz.statutValidation, "valide")];
+      if (input?.ville) conditions.push(eq(boutiquesGaz.ville, input.ville));
+      if (input?.commune) conditions.push(eq(boutiquesGaz.commune, input.commune));
+
+      const boutiques = await db
+        .select()
+        .from(boutiquesGaz)
+        .where(and(...conditions));
+
+      // Compte le nombre de références en stock par boutique, pour l'affichage façon "menu disponible"
+      const stocks = await db
+        .select({
+          boutiqueId: stockBoutique.boutiqueId,
+          nbReferences: sql<number>`count(*) filter (where ${stockBoutique.quantiteDisponible} > 0)`,
+        })
+        .from(stockBoutique)
+        .groupBy(stockBoutique.boutiqueId);
+
+      const stockParBoutique = new Map(stocks.map((s) => [s.boutiqueId, Number(s.nbReferences)]));
+
+      return boutiques.map((b) => ({
+        ...b,
+        nbReferencesDisponibles: stockParBoutique.get(b.id) ?? 0,
+      }));
+    }),
+
+  // "Menu" d'une boutique : ses marques en stock avec prix et quantité (façon carte de restaurant)
+  catalogueBoutique: protectedProcedure
+    .input(z.object({ boutiqueId: z.string().uuid() }))
+    .query(async ({ input }) => {
+      const rows = await db
+        .select({
+          marqueId: marquesGaz.id,
+          nom: marquesGaz.nom,
+          taille: marquesGaz.taille,
+          prixRecharge: marquesGaz.prixRecharge,
+          prixConsigne: marquesGaz.prixConsigne,
+          quantiteDisponible: stockBoutique.quantiteDisponible,
+        })
+        .from(stockBoutique)
+        .innerJoin(marquesGaz, eq(stockBoutique.marqueGazId, marquesGaz.id))
+        .where(and(eq(stockBoutique.boutiqueId, input.boutiqueId), gt(stockBoutique.quantiteDisponible, 0)));
+
+      return rows;
+    }),
+
+  // Liste des marques/tailles disponibles (catalogue public, référentiel global)
   catalogue: protectedProcedure.query(async () => {
     return db.select().from(marquesGaz).where(eq(marquesGaz.actif, true));
   }),
