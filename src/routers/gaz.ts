@@ -80,7 +80,7 @@ export const gazRouter = router({
     }),
 
   // La boutique confirme la commande et décrémente son stock (transaction atomique)
-  confirmerCommande: requireRole("boutique")
+  confirmerCommande: requireRole("boutique", "admin")
     .input(z.object({ commandeId: z.string().uuid() }))
     .mutation(async ({ input }) => {
       const [commande] = await db

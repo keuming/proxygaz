@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import { appRouter } from "./routers/index.js";
 import { createContext } from "./trpc.js";
 import { db, schema } from "./db/index.js";
-import { executerMigrations } from "./services/migrate.js";
+import { executerMigrations, creerCompteAdmin } from "./services/migrate.js";
 
 const app = express();
 
@@ -36,6 +36,31 @@ app.post("/api/admin/migrate", async (req, res) => {
     console.error("Erreur migration:", err);
     res.status(500).json({
       error: "Échec de la migration",
+      details: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
+// Route d'administration : crée le premier compte admin (idempotent).
+// Protégée par la même clé secrète que /api/admin/migrate.
+app.post("/api/admin/seed-admin", async (req, res) => {
+  const cleAdmin = req.headers["x-admin-key"];
+  if (!process.env.ADMIN_MIGRATE_KEY || cleAdmin !== process.env.ADMIN_MIGRATE_KEY) {
+    return res.status(401).json({ error: "Clé admin invalide ou manquante" });
+  }
+
+  const { nom, telephone, motDePasse } = req.body;
+  if (!nom || !telephone || !motDePasse) {
+    return res.status(400).json({ error: "nom, telephone et motDePasse sont requis" });
+  }
+
+  try {
+    const resultat = await creerCompteAdmin({ nom, telephone, motDePasse });
+    res.status(200).json({ success: true, ...resultat });
+  } catch (err) {
+    console.error("Erreur création admin:", err);
+    res.status(500).json({
+      error: "Échec de la création du compte admin",
       details: err instanceof Error ? err.message : String(err),
     });
   }
