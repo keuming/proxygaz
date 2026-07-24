@@ -300,11 +300,18 @@ export const gazRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: "Profil livreur non validé" });
       }
 
+      const [utilisateurLivreur] = await db
+        .select({ nom: schema.utilisateurs.nom, telephone: schema.utilisateurs.telephone })
+        .from(schema.utilisateurs)
+        .where(eq(schema.utilisateurs.id, ctx.user.id));
+
       const [commande] = await db
         .update(commandesGaz)
         .set({
           statut: "en_livraison",
           livreurId: profilLivreur.id,
+          livreurNom: utilisateurLivreur?.nom,
+          livreurTelephone: utilisateurLivreur?.telephone,
         })
         .where(and(eq(commandesGaz.id, input.commandeId), eq(commandesGaz.statut, "confirmee")))
         .returning();
