@@ -13,7 +13,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *
  * Appelée via la route POST /api/admin/migrate, protégée par le header x-admin-key.
  */
-export async function executerMigrations(): Promise<{ fichiersAppliques: string[] }> {
+export async function executerMigrations(): Promise<{ fichiersAppliques: string[]; fichiersIgnores: string[] }> {
   if (!process.env.DATABASE_URL) {
     throw new Error("DATABASE_URL manquant");
   }
@@ -21,14 +21,46 @@ export async function executerMigrations(): Promise<{ fichiersAppliques: string[
   const sql = neon(process.env.DATABASE_URL);
   const dossierMigrations = path.join(__dirname, "../../drizzle");
 
+  // Table de suivi : garde la trace des fichiers déjà exécutés pour ne jamais les rejouer.
+  await sql(`
+    CREATE TABLE IF NOT EXISTS migrations_appliquees (
+      fichier VARCHAR(255) PRIMARY KEY,
+      applique_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  // Bootstrap ponctuel : si cette table de suivi vient d'être créée mais que la base
+  // contient déjà les tables initiales (migration 0000 exécutée avant la mise en place
+  // du suivi), on la marque comme déjà appliquée sans la rejouer.
+  const suiviVide = await sql("SELECT COUNT(*) as n FROM migrations_appliquees");
+  if (Number(suiviVide[0].n) === 0) {
+    const tableExistante = await sql(
+      "SELECT to_regclass('public.utilisateurs') as t"
+    );
+    if (tableExistante[0].t) {
+      await sql(
+        "INSERT INTO migrations_appliquees (fichier) VALUES ('0000_famous_post.sql') ON CONFLICT DO NOTHING"
+      );
+    }
+  }
+
+  const dejaAppliques = await sql("SELECT fichier FROM migrations_appliquees");
+  const dejaAppliquesSet = new Set(dejaAppliques.map((r: any) => r.fichier as string));
+
   const fichiers = fs
     .readdirSync(dossierMigrations)
     .filter((f) => f.endsWith(".sql"))
     .sort();
 
   const fichiersAppliques: string[] = [];
+  const fichiersIgnores: string[] = [];
 
   for (const fichier of fichiers) {
+    if (dejaAppliquesSet.has(fichier)) {
+      fichiersIgnores.push(fichier);
+      continue;
+    }
+
     const contenu = fs.readFileSync(path.join(dossierMigrations, fichier), "utf-8");
 
     // Les fichiers générés par drizzle-kit séparent les statements par "--> statement-breakpoint"
@@ -41,10 +73,11 @@ export async function executerMigrations(): Promise<{ fichiersAppliques: string[
       await sql(statement);
     }
 
+    await sql("INSERT INTO migrations_appliquees (fichier) VALUES ($1)", [fichier]);
     fichiersAppliques.push(fichier);
   }
 
-  return { fichiersAppliques };
+  return { fichiersAppliques, fichiersIgnores };
 }
 
 /**
