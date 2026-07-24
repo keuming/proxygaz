@@ -290,4 +290,112 @@ export const gazRouter = router({
       .from(commandesGaz)
       .where(eq(commandesGaz.clientId, ctx.user.id));
   }),
+
+  // ---- Espace boutique (self-service) ----
+
+  commandesBoutique: requireRole("boutique").query(async ({ ctx }) => {
+    const [boutique] = await db
+      .select()
+      .from(boutiquesGaz)
+      .where(eq(boutiquesGaz.utilisateurId, ctx.user.id));
+
+    if (!boutique) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "Profil boutique introuvable" });
+    }
+
+    const rows = await db
+      .select({
+        commande: commandesGaz,
+        clientNom: schema.utilisateurs.nom,
+        clientTelephone: schema.utilisateurs.telephone,
+      })
+      .from(commandesGaz)
+      .innerJoin(schema.utilisateurs, eq(commandesGaz.clientId, schema.utilisateurs.id))
+      .where(eq(commandesGaz.boutiqueId, boutique.id));
+
+    return rows.map((r) => ({ ...r.commande, clientNom: r.clientNom, clientTelephone: r.clientTelephone }));
+  }),
+
+  monStock: requireRole("boutique").query(async ({ ctx }) => {
+    const [boutique] = await db
+      .select()
+      .from(boutiquesGaz)
+      .where(eq(boutiquesGaz.utilisateurId, ctx.user.id));
+
+    if (!boutique) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "Profil boutique introuvable" });
+    }
+
+    const rows = await db
+      .select({
+        stock: stockBoutique,
+        marqueNom: marquesGaz.nom,
+        marqueTaille: marquesGaz.taille,
+      })
+      .from(stockBoutique)
+      .innerJoin(marquesGaz, eq(stockBoutique.marqueGazId, marquesGaz.id))
+      .where(eq(stockBoutique.boutiqueId, boutique.id));
+
+    return rows.map((r) => ({ ...r.stock, marqueNom: r.marqueNom, marqueTaille: r.marqueTaille }));
+  }),
+
+  majMonStock: requireRole("boutique")
+    .input(z.object({ marqueGazId: z.string().uuid(), quantiteDisponible: z.number().int().nonnegative() }))
+    .mutation(async ({ ctx, input }) => {
+      const [boutique] = await db
+        .select()
+        .from(boutiquesGaz)
+        .where(eq(boutiquesGaz.utilisateurId, ctx.user.id));
+
+      if (!boutique) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Profil boutique introuvable" });
+      }
+
+      const [existant] = await db
+        .select()
+        .from(stockBoutique)
+        .where(
+          and(
+            eq(stockBoutique.boutiqueId, boutique.id),
+            eq(stockBoutique.marqueGazId, input.marqueGazId)
+          )
+        );
+
+      if (existant) {
+        const [maj] = await db
+          .update(stockBoutique)
+          .set({ quantiteDisponible: input.quantiteDisponible, updatedAt: new Date() })
+          .where(eq(stockBoutique.id, existant.id))
+          .returning();
+        return maj;
+      }
+
+      const [créé] = await db
+        .insert(stockBoutique)
+        .values({
+          boutiqueId: boutique.id,
+          marqueGazId: input.marqueGazId,
+          quantiteDisponible: input.quantiteDisponible,
+        })
+        .returning();
+      return créé;
+    }),
+
+  // ---- Espace livreur (self-service) ----
+
+  mesLivraisons: requireRole("livreur").query(async ({ ctx }) => {
+    const [profilLivreur] = await db
+      .select()
+      .from(livreurs)
+      .where(eq(livreurs.utilisateurId, ctx.user.id));
+
+    if (!profilLivreur) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "Profil livreur introuvable" });
+    }
+
+    return db
+      .select()
+      .from(commandesGaz)
+      .where(eq(commandesGaz.livreurId, profilLivreur.id));
+  }),
 });

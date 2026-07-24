@@ -207,4 +207,21 @@ export const ramassageRouter = router({
       .from(demandesRamassage)
       .where(eq(demandesRamassage.clientId, ctx.user.id));
   }),
+
+  // Suivi ramasseur : ses propres demandes acceptées (validee, en_cours, terminee)
+  mesRamassages: requireRole("ramasseur").query(async ({ ctx }) => {
+    const [profilRamasseur] = await db
+      .select()
+      .from(ramasseurs)
+      .where(eq(ramasseurs.utilisateurId, ctx.user.id));
+
+    if (!profilRamasseur) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "Profil ramasseur introuvable" });
+    }
+
+    return db
+      .select()
+      .from(demandesRamassage)
+      .where(eq(demandesRamassage.ramasseurId, profilRamasseur.id));
+  }),
 });
