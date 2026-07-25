@@ -36,10 +36,34 @@ async function enregistrerMouvement(params: {
   await db.insert(mouvementsStock).values(params);
 }
 
+/**
+ * Distance à vol d'oiseau entre deux points GPS (formule de Haversine), en kilomètres.
+ * Suffisant pour trier "la boutique la plus proche" sans dépendre d'une API externe payante.
+ */
+function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371; // rayon moyen de la Terre en km
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 export const gazRouter = router({
-  // Liste des boutiques (façon "liste de restaurants") — parcours en premier, avant de choisir un produit
+  // Liste des boutiques (façon "liste de restaurants") — triée par proximité réelle si les
+  // coordonnées du client sont fournies, sinon par ville/commune.
   boutiquesProches: protectedProcedure
-    .input(z.object({ ville: z.string().optional(), commune: z.string().optional() }).optional())
+    .input(
+      z
+        .object({
+          ville: z.string().optional(),
+          commune: z.string().optional(),
+          latitude: z.number().optional(),
+          longitude: z.number().optional(),
+        })
+        .optional()
+    )
     .query(async ({ input }) => {
       const conditions = [eq(boutiquesGaz.statutValidation, "valide")];
       if (input?.ville) conditions.push(eq(boutiquesGaz.ville, input.ville));
@@ -61,10 +85,27 @@ export const gazRouter = router({
 
       const stockParBoutique = new Map(stocks.map((s) => [s.boutiqueId, Number(s.nbReferences)]));
 
-      return boutiques.map((b) => ({
-        ...b,
-        nbReferencesDisponibles: stockParBoutique.get(b.id) ?? 0,
-      }));
+      const enrichies = boutiques.map((b) => {
+        const distance =
+          input?.latitude != null && input?.longitude != null && b.latitude != null && b.longitude != null
+            ? distanceKm(input.latitude, input.longitude, b.latitude, b.longitude)
+            : null;
+        return {
+          ...b,
+          nbReferencesDisponibles: stockParBoutique.get(b.id) ?? 0,
+          distanceKm: distance !== null ? Math.round(distance * 10) / 10 : null,
+        };
+      });
+
+      // Tri par distance croissante si on la connaît, sinon ordre naturel
+      enrichies.sort((a, b) => {
+        if (a.distanceKm === null && b.distanceKm === null) return 0;
+        if (a.distanceKm === null) return 1;
+        if (b.distanceKm === null) return -1;
+        return a.distanceKm - b.distanceKm;
+      });
+
+      return enrichies;
     }),
 
   // "Menu" d'une boutique : ses marques en stock avec prix et quantité (façon carte de restaurant)
@@ -226,11 +267,16 @@ export const gazRouter = router({
         throw new TRPCError({ code: "NOT_FOUND", message: "Marque de gaz introuvable" });
       }
 
-      // Assignation automatique à la première boutique disposant du stock, si non précisée
+      // Assignation automatique à la boutique la plus proche disposant du stock (si coordonnées
+      // fournies), sinon à la première trouvée, si aucune boutique n'a été précisée explicitement.
       let boutiqueId = input.boutiqueId;
       if (!boutiqueId) {
-        const [boutiqueAuto] = await db
-          .select({ id: boutiquesGaz.id })
+        const candidates = await db
+          .select({
+            id: boutiquesGaz.id,
+            latitude: boutiquesGaz.latitude,
+            longitude: boutiquesGaz.longitude,
+          })
           .from(stockBoutique)
           .innerJoin(boutiquesGaz, eq(stockBoutique.boutiqueId, boutiquesGaz.id))
           .where(
@@ -239,16 +285,29 @@ export const gazRouter = router({
               gt(stockBoutique.quantiteDisponible, 0),
               eq(boutiquesGaz.statutValidation, "valide")
             )
-          )
-          .limit(1);
+          );
 
-        if (!boutiqueAuto) {
+        if (candidates.length === 0) {
           throw new TRPCError({
             code: "NOT_FOUND",
             message: "Aucune boutique n'a ce produit en stock actuellement",
           });
         }
-        boutiqueId = boutiqueAuto.id;
+
+        if (input.latitude != null && input.longitude != null) {
+          const avecDistance = candidates
+            .map((c) => ({
+              id: c.id,
+              distance:
+                c.latitude != null && c.longitude != null
+                  ? distanceKm(input.latitude!, input.longitude!, c.latitude, c.longitude)
+                  : Infinity,
+            }))
+            .sort((a, b) => a.distance - b.distance);
+          boutiqueId = avecDistance[0].id;
+        } else {
+          boutiqueId = candidates[0].id;
+        }
       }
 
       const prixUnitaire = parseFloat(marque.prixRecharge);
