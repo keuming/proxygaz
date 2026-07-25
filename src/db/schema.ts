@@ -190,6 +190,12 @@ export const livreurs = pgTable("livreurs", {
   utilisateurId: uuid("utilisateur_id").references(() => utilisateurs.id).notNull(),
   vehicule: varchar("vehicule", { length: 60 }), // "moto", "tricycle", "camionnette"
   zonesCouvertes: jsonb("zones_couvertes").notNull().default([]), // ["Cocody", "Marcory", ...]
+  pays: varchar("pays", { length: 100 }).notNull().default("Côte d'Ivoire"),
+  ville: varchar("ville", { length: 100 }),
+  commune: varchar("commune", { length: 100 }),
+  quartier: varchar("quartier", { length: 100 }),
+  latitude: doublePrecision("latitude"),
+  longitude: doublePrecision("longitude"),
   statutValidation: statutValidationEnum("statut_validation").default("en_attente"),
   noteMoyenne: doublePrecision("note_moyenne").default(0),
   nombreLivraisons: integer("nombre_livraisons").notNull().default(0),
@@ -229,6 +235,12 @@ export const ramasseurs = pgTable("ramasseurs", {
   nomSociete: varchar("nom_societe", { length: 150 }), // si type = societe
   zonesCouvertes: jsonb("zones_couvertes").notNull().default([]), // ["Cocody", "Marcory", ...]
   vehicule: varchar("vehicule", { length: 60 }), // "camion", "tricycle", "camionnette"
+  pays: varchar("pays", { length: 100 }).notNull().default("Côte d'Ivoire"),
+  ville: varchar("ville", { length: 100 }),
+  commune: varchar("commune", { length: 100 }),
+  quartier: varchar("quartier", { length: 100 }),
+  latitude: doublePrecision("latitude"),
+  longitude: doublePrecision("longitude"),
   statutValidation: statutValidationEnum("statut_validation").default("en_attente"),
   noteMoyenne: doublePrecision("note_moyenne").default(0),
   nombreRamassages: integer("nombre_ramassages").notNull().default(0),

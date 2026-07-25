@@ -36,6 +36,13 @@
       "when": 1784964785380,
       "tag": "0004_daily_thundra",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1784965573225,
+      "tag": "0005_superb_quasar",
+      "breakpoints": true
     }
   ]
 }
