@@ -21,6 +21,7 @@ export const ramassageRouter = router({
         typeDechet: z.string().default("menager"),
         quantiteEstimee: z.string().optional(),
         prixPropose: z.number().optional(),
+        modePaiement: z.enum(["mobile_money", "especes_livraison"]).optional(),
         // Renseignés uniquement si la personne n'est pas déjà connectée
         nomClient: z.string().min(2).optional(),
         telephoneClient: z.string().min(8).optional(),
@@ -81,6 +82,8 @@ export const ramassageRouter = router({
         userGenere = { id: utilisateurComplet.id, nom: utilisateurComplet.nom, role: utilisateurComplet.role };
       }
 
+      const encaisseImmediatement = input.modePaiement === "mobile_money";
+
       const [demande] = await db
         .insert(demandesRamassage)
         .values({
@@ -93,6 +96,9 @@ export const ramassageRouter = router({
           typeDechet: input.typeDechet,
           quantiteEstimee: input.quantiteEstimee,
           prixPropose: input.prixPropose?.toString(),
+          modePaiement: input.modePaiement,
+          encaisse: encaisseImmediatement,
+          encaisseAt: encaisseImmediatement ? new Date() : undefined,
           statut: "en_attente",
         })
         .returning();
@@ -234,7 +240,12 @@ export const ramassageRouter = router({
 
       const [demande] = await db
         .update(demandesRamassage)
-        .set({ statut: "terminee", terminatedAt: new Date() })
+        .set({
+          statut: "terminee",
+          terminatedAt: new Date(),
+          encaisse: sql`CASE WHEN ${demandesRamassage.modePaiement} = 'especes_livraison' THEN true ELSE ${demandesRamassage.encaisse} END`,
+          encaisseAt: sql`CASE WHEN ${demandesRamassage.modePaiement} = 'especes_livraison' AND ${demandesRamassage.encaisse} = false THEN now() ELSE ${demandesRamassage.encaisseAt} END`,
+        })
         .where(
           and(
             eq(demandesRamassage.id, input.demandeId),
@@ -313,4 +324,54 @@ export const ramassageRouter = router({
       valideesEnAttenteDeDemarrage: toutes.filter((d) => d.statut === "validee").length,
     };
   }),
+
+  // ---- Encaissements (fenêtre de monitoring espèces vs MobilePay) ----
+  mesEncaissements: requireRole("ramasseur")
+    .input(z.object({ depuis: z.string().datetime().optional() }).optional())
+    .query(async ({ ctx, input }) => {
+      const [profilRamasseur] = await db
+        .select()
+        .from(ramasseurs)
+        .where(eq(ramasseurs.utilisateurId, ctx.user.id));
+
+      if (!profilRamasseur) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Profil ramasseur introuvable" });
+      }
+
+      const conditions = [
+        eq(demandesRamassage.ramasseurId, profilRamasseur.id),
+        eq(demandesRamassage.encaisse, true),
+      ];
+      if (input?.depuis) {
+        conditions.push(sql`${demandesRamassage.encaisseAt} >= ${input.depuis}::timestamp`);
+      }
+
+      const rows = await db
+        .select({
+          demande: demandesRamassage,
+          clientNom: schema.utilisateurs.nom,
+        })
+        .from(demandesRamassage)
+        .innerJoin(schema.utilisateurs, eq(demandesRamassage.clientId, schema.utilisateurs.id))
+        .where(and(...conditions));
+
+      const transactions = rows.map((r) => ({ ...r.demande, clientNom: r.clientNom }));
+
+      const totalEspeces = transactions
+        .filter((t) => t.modePaiement === "especes_livraison")
+        .reduce((s, t) => s + Number(t.prixPropose ?? 0), 0);
+      const totalMobilePay = transactions
+        .filter((t) => t.modePaiement === "mobile_money")
+        .reduce((s, t) => s + Number(t.prixPropose ?? 0), 0);
+
+      return {
+        transactions,
+        totaux: {
+          especes: totalEspeces,
+          mobilePay: totalMobilePay,
+          global: totalEspeces + totalMobilePay,
+          nbTransactions: transactions.length,
+        },
+      };
+    }),
 });

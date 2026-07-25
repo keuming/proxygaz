@@ -262,6 +262,9 @@ export const demandesRamassage = pgTable("demandes_ramassage", {
   typeDechet: varchar("type_dechet", { length: 60 }).default("menager"),
   quantiteEstimee: varchar("quantite_estimee", { length: 60 }), // "1 sac", "plusieurs sacs", "encombrants"
   prixPropose: decimal("prix_propose", { precision: 10, scale: 2 }),
+  modePaiement: modePaiementEnum("mode_paiement"),
+  encaisse: boolean("encaisse").notNull().default(false),
+  encaisseAt: timestamp("encaisse_at"),
   statut: statutDemandeRamassageEnum("statut").notNull().default("en_attente"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   validatedAt: timestamp("validated_at"),

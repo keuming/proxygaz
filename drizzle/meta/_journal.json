@@ -50,6 +50,13 @@
       "when": 1784968645985,
       "tag": "0006_ordinary_firebrand",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1784970480544,
+      "tag": "0007_bouncy_squadron_supreme",
+      "breakpoints": true
     }
   ]
 }

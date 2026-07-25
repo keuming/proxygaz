@@ -1,0 +1,1606 @@
+{
+  "id": "5d1743a5-d135-45c6-8595-885a58202729",
+  "prevId": "13188e46-6e7b-45ec-8252-d33237a4f0e2",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.approvisionnements": {
+      "name": "approvisionnements",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "boutique_id": {
+          "name": "boutique_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fournisseur_id": {
+          "name": "fournisseur_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "marque_gaz_id": {
+          "name": "marque_gaz_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "quantite": {
+          "name": "quantite",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prix_achat_unitaire": {
+          "name": "prix_achat_unitaire",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "statut": {
+          "name": "statut",
+          "type": "statut_approvisionnement",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'commande'"
+        },
+        "date_commande": {
+          "name": "date_commande",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "date_reception": {
+          "name": "date_reception",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "approvisionnements_boutique_id_boutiques_gaz_id_fk": {
+          "name": "approvisionnements_boutique_id_boutiques_gaz_id_fk",
+          "tableFrom": "approvisionnements",
+          "tableTo": "boutiques_gaz",
+          "columnsFrom": [
+            "boutique_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "approvisionnements_fournisseur_id_fournisseurs_id_fk": {
+          "name": "approvisionnements_fournisseur_id_fournisseurs_id_fk",
+          "tableFrom": "approvisionnements",
+          "tableTo": "fournisseurs",
+          "columnsFrom": [
+            "fournisseur_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "approvisionnements_marque_gaz_id_marques_gaz_id_fk": {
+          "name": "approvisionnements_marque_gaz_id_marques_gaz_id_fk",
+          "tableFrom": "approvisionnements",
+          "tableTo": "marques_gaz",
+          "columnsFrom": [
+            "marque_gaz_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.boutiques_gaz": {
+      "name": "boutiques_gaz",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "utilisateur_id": {
+          "name": "utilisateur_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "nom_boutique": {
+          "name": "nom_boutique",
+          "type": "varchar(150)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pays": {
+          "name": "pays",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'Côte d''Ivoire'"
+        },
+        "ville": {
+          "name": "ville",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "commune": {
+          "name": "commune",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "quartier": {
+          "name": "quartier",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "adresse": {
+          "name": "adresse",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "latitude": {
+          "name": "latitude",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "longitude": {
+          "name": "longitude",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "rayon_livraison_km": {
+          "name": "rayon_livraison_km",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false,
+          "default": 5
+        },
+        "statut_validation": {
+          "name": "statut_validation",
+          "type": "statut_validation",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'en_attente'"
+        },
+        "note_moyenne": {
+          "name": "note_moyenne",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false,
+          "default": 0
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "boutiques_gaz_utilisateur_id_utilisateurs_id_fk": {
+          "name": "boutiques_gaz_utilisateur_id_utilisateurs_id_fk",
+          "tableFrom": "boutiques_gaz",
+          "tableTo": "utilisateurs",
+          "columnsFrom": [
+            "utilisateur_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.commandes_gaz": {
+      "name": "commandes_gaz",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "client_id": {
+          "name": "client_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "marque_gaz_id": {
+          "name": "marque_gaz_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "boutique_id": {
+          "name": "boutique_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "livreur_id": {
+          "name": "livreur_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "quantite": {
+          "name": "quantite",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "echange_bouteille_vide": {
+          "name": "echange_bouteille_vide",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "adresse_livraison": {
+          "name": "adresse_livraison",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "latitude": {
+          "name": "latitude",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "longitude": {
+          "name": "longitude",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "prix_total": {
+          "name": "prix_total",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "statut": {
+          "name": "statut",
+          "type": "statut_commande_gaz",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'en_attente'"
+        },
+        "livreur_nom": {
+          "name": "livreur_nom",
+          "type": "varchar(120)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "livreur_telephone": {
+          "name": "livreur_telephone",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "mode_paiement": {
+          "name": "mode_paiement",
+          "type": "mode_paiement",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "encaisse": {
+          "name": "encaisse",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "encaisse_at": {
+          "name": "encaisse_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "notes": {
+          "name": "notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "raison_non_livraison": {
+          "name": "raison_non_livraison",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "confirmed_at": {
+          "name": "confirmed_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "livree_at": {
+          "name": "livree_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "commandes_gaz_client_id_utilisateurs_id_fk": {
+          "name": "commandes_gaz_client_id_utilisateurs_id_fk",
+          "tableFrom": "commandes_gaz",
+          "tableTo": "utilisateurs",
+          "columnsFrom": [
+            "client_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "commandes_gaz_marque_gaz_id_marques_gaz_id_fk": {
+          "name": "commandes_gaz_marque_gaz_id_marques_gaz_id_fk",
+          "tableFrom": "commandes_gaz",
+          "tableTo": "marques_gaz",
+          "columnsFrom": [
+            "marque_gaz_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "commandes_gaz_boutique_id_boutiques_gaz_id_fk": {
+          "name": "commandes_gaz_boutique_id_boutiques_gaz_id_fk",
+          "tableFrom": "commandes_gaz",
+          "tableTo": "boutiques_gaz",
+          "columnsFrom": [
+            "boutique_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "commandes_gaz_livreur_id_livreurs_id_fk": {
+          "name": "commandes_gaz_livreur_id_livreurs_id_fk",
+          "tableFrom": "commandes_gaz",
+          "tableTo": "livreurs",
+          "columnsFrom": [
+            "livreur_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.demandes_ramassage": {
+      "name": "demandes_ramassage",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "client_id": {
+          "name": "client_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ramasseur_id": {
+          "name": "ramasseur_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "adresse": {
+          "name": "adresse",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "latitude": {
+          "name": "latitude",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "longitude": {
+          "name": "longitude",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ville": {
+          "name": "ville",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "commune": {
+          "name": "commune",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "type_dechet": {
+          "name": "type_dechet",
+          "type": "varchar(60)",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'menager'"
+        },
+        "quantite_estimee": {
+          "name": "quantite_estimee",
+          "type": "varchar(60)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "prix_propose": {
+          "name": "prix_propose",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "mode_paiement": {
+          "name": "mode_paiement",
+          "type": "mode_paiement",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "encaisse": {
+          "name": "encaisse",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "encaisse_at": {
+          "name": "encaisse_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "statut": {
+          "name": "statut",
+          "type": "statut_demande_ramassage",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'en_attente'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "validated_at": {
+          "name": "validated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "terminated_at": {
+          "name": "terminated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "demandes_ramassage_client_id_utilisateurs_id_fk": {
+          "name": "demandes_ramassage_client_id_utilisateurs_id_fk",
+          "tableFrom": "demandes_ramassage",
+          "tableTo": "utilisateurs",
+          "columnsFrom": [
+            "client_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "demandes_ramassage_ramasseur_id_ramasseurs_id_fk": {
+          "name": "demandes_ramassage_ramasseur_id_ramasseurs_id_fk",
+          "tableFrom": "demandes_ramassage",
+          "tableTo": "ramasseurs",
+          "columnsFrom": [
+            "ramasseur_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.fournisseurs": {
+      "name": "fournisseurs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "boutique_id": {
+          "name": "boutique_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "nom": {
+          "name": "nom",
+          "type": "varchar(150)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "telephone": {
+          "name": "telephone",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "adresse": {
+          "name": "adresse",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "actif": {
+          "name": "actif",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "fournisseurs_boutique_id_boutiques_gaz_id_fk": {
+          "name": "fournisseurs_boutique_id_boutiques_gaz_id_fk",
+          "tableFrom": "fournisseurs",
+          "tableTo": "boutiques_gaz",
+          "columnsFrom": [
+            "boutique_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.livreurs": {
+      "name": "livreurs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "utilisateur_id": {
+          "name": "utilisateur_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "vehicule": {
+          "name": "vehicule",
+          "type": "varchar(60)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "zones_couvertes": {
+          "name": "zones_couvertes",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "pays": {
+          "name": "pays",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'Côte d''Ivoire'"
+        },
+        "ville": {
+          "name": "ville",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "commune": {
+          "name": "commune",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "quartier": {
+          "name": "quartier",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "latitude": {
+          "name": "latitude",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "longitude": {
+          "name": "longitude",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "statut_validation": {
+          "name": "statut_validation",
+          "type": "statut_validation",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'en_attente'"
+        },
+        "note_moyenne": {
+          "name": "note_moyenne",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false,
+          "default": 0
+        },
+        "nombre_livraisons": {
+          "name": "nombre_livraisons",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "livreurs_utilisateur_id_utilisateurs_id_fk": {
+          "name": "livreurs_utilisateur_id_utilisateurs_id_fk",
+          "tableFrom": "livreurs",
+          "tableTo": "utilisateurs",
+          "columnsFrom": [
+            "utilisateur_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.marques_gaz": {
+      "name": "marques_gaz",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "nom": {
+          "name": "nom",
+          "type": "varchar(60)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "taille": {
+          "name": "taille",
+          "type": "varchar(10)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prix_consigne": {
+          "name": "prix_consigne",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "prix_recharge": {
+          "name": "prix_recharge",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actif": {
+          "name": "actif",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.mouvements_stock": {
+      "name": "mouvements_stock",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "boutique_id": {
+          "name": "boutique_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "marque_gaz_id": {
+          "name": "marque_gaz_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "type_mouvement": {
+          "name": "type_mouvement",
+          "type": "type_mouvement_stock",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "quantite": {
+          "name": "quantite",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "solde_apres": {
+          "name": "solde_apres",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reference": {
+          "name": "reference",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "notes": {
+          "name": "notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "mouvements_stock_boutique_id_boutiques_gaz_id_fk": {
+          "name": "mouvements_stock_boutique_id_boutiques_gaz_id_fk",
+          "tableFrom": "mouvements_stock",
+          "tableTo": "boutiques_gaz",
+          "columnsFrom": [
+            "boutique_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "mouvements_stock_marque_gaz_id_marques_gaz_id_fk": {
+          "name": "mouvements_stock_marque_gaz_id_marques_gaz_id_fk",
+          "tableFrom": "mouvements_stock",
+          "tableTo": "marques_gaz",
+          "columnsFrom": [
+            "marque_gaz_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.notifications": {
+      "name": "notifications",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "utilisateur_id": {
+          "name": "utilisateur_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "titre": {
+          "name": "titre",
+          "type": "varchar(150)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "message": {
+          "name": "message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "varchar(40)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lu": {
+          "name": "lu",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "notifications_utilisateur_id_utilisateurs_id_fk": {
+          "name": "notifications_utilisateur_id_utilisateurs_id_fk",
+          "tableFrom": "notifications",
+          "tableTo": "utilisateurs",
+          "columnsFrom": [
+            "utilisateur_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.paiements": {
+      "name": "paiements",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "utilisateur_id": {
+          "name": "utilisateur_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "type_service": {
+          "name": "type_service",
+          "type": "type_service",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "commande_gaz_id": {
+          "name": "commande_gaz_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "demande_ramassage_id": {
+          "name": "demande_ramassage_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "montant": {
+          "name": "montant",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mode_paiement": {
+          "name": "mode_paiement",
+          "type": "mode_paiement",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "operateur": {
+          "name": "operateur",
+          "type": "varchar(40)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "hub2_transaction_id": {
+          "name": "hub2_transaction_id",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "hub2_reference": {
+          "name": "hub2_reference",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "statut": {
+          "name": "statut",
+          "type": "statut_paiement",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'en_attente'"
+        },
+        "raw_response": {
+          "name": "raw_response",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "paiements_utilisateur_id_utilisateurs_id_fk": {
+          "name": "paiements_utilisateur_id_utilisateurs_id_fk",
+          "tableFrom": "paiements",
+          "tableTo": "utilisateurs",
+          "columnsFrom": [
+            "utilisateur_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "paiements_commande_gaz_id_commandes_gaz_id_fk": {
+          "name": "paiements_commande_gaz_id_commandes_gaz_id_fk",
+          "tableFrom": "paiements",
+          "tableTo": "commandes_gaz",
+          "columnsFrom": [
+            "commande_gaz_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "paiements_demande_ramassage_id_demandes_ramassage_id_fk": {
+          "name": "paiements_demande_ramassage_id_demandes_ramassage_id_fk",
+          "tableFrom": "paiements",
+          "tableTo": "demandes_ramassage",
+          "columnsFrom": [
+            "demande_ramassage_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.ramasseurs": {
+      "name": "ramasseurs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "utilisateur_id": {
+          "name": "utilisateur_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "type_ramasseur",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'particulier'"
+        },
+        "nom_societe": {
+          "name": "nom_societe",
+          "type": "varchar(150)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "zones_couvertes": {
+          "name": "zones_couvertes",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "vehicule": {
+          "name": "vehicule",
+          "type": "varchar(60)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pays": {
+          "name": "pays",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'Côte d''Ivoire'"
+        },
+        "ville": {
+          "name": "ville",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "commune": {
+          "name": "commune",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "quartier": {
+          "name": "quartier",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "latitude": {
+          "name": "latitude",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "longitude": {
+          "name": "longitude",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "statut_validation": {
+          "name": "statut_validation",
+          "type": "statut_validation",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'en_attente'"
+        },
+        "note_moyenne": {
+          "name": "note_moyenne",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false,
+          "default": 0
+        },
+        "nombre_ramassages": {
+          "name": "nombre_ramassages",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "ramasseurs_utilisateur_id_utilisateurs_id_fk": {
+          "name": "ramasseurs_utilisateur_id_utilisateurs_id_fk",
+          "tableFrom": "ramasseurs",
+          "tableTo": "utilisateurs",
+          "columnsFrom": [
+            "utilisateur_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.stock_boutique": {
+      "name": "stock_boutique",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "boutique_id": {
+          "name": "boutique_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "marque_gaz_id": {
+          "name": "marque_gaz_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "quantite_disponible": {
+          "name": "quantite_disponible",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "quantite_pleines": {
+          "name": "quantite_pleines",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "seuil_alerte": {
+          "name": "seuil_alerte",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 5
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "stock_boutique_boutique_id_boutiques_gaz_id_fk": {
+          "name": "stock_boutique_boutique_id_boutiques_gaz_id_fk",
+          "tableFrom": "stock_boutique",
+          "tableTo": "boutiques_gaz",
+          "columnsFrom": [
+            "boutique_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "stock_boutique_marque_gaz_id_marques_gaz_id_fk": {
+          "name": "stock_boutique_marque_gaz_id_marques_gaz_id_fk",
+          "tableFrom": "stock_boutique",
+          "tableTo": "marques_gaz",
+          "columnsFrom": [
+            "marque_gaz_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.utilisateurs": {
+      "name": "utilisateurs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "nom": {
+          "name": "nom",
+          "type": "varchar(120)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "telephone": {
+          "name": "telephone",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "email": {
+          "name": "email",
+          "type": "varchar(160)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "mot_de_passe_hash": {
+          "name": "mot_de_passe_hash",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "role",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'client'"
+        },
+        "ville": {
+          "name": "ville",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "commune": {
+          "name": "commune",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "adresse_defaut": {
+          "name": "adresse_defaut",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "latitude": {
+          "name": "latitude",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "longitude": {
+          "name": "longitude",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "actif": {
+          "name": "actif",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "tentatives_echouees": {
+          "name": "tentatives_echouees",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "verrouille_jusqua": {
+          "name": "verrouille_jusqua",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "utilisateurs_telephone_unique": {
+          "name": "utilisateurs_telephone_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "telephone"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {
+    "public.mode_paiement": {
+      "name": "mode_paiement",
+      "schema": "public",
+      "values": [
+        "mobile_money",
+        "especes_livraison"
+      ]
+    },
+    "public.role": {
+      "name": "role",
+      "schema": "public",
+      "values": [
+        "client",
+        "boutique",
+        "livreur",
+        "ramasseur",
+        "admin"
+      ]
+    },
+    "public.statut_approvisionnement": {
+      "name": "statut_approvisionnement",
+      "schema": "public",
+      "values": [
+        "commande",
+        "receptionne",
+        "annule"
+      ]
+    },
+    "public.statut_commande_gaz": {
+      "name": "statut_commande_gaz",
+      "schema": "public",
+      "values": [
+        "en_attente",
+        "confirmee",
+        "en_livraison",
+        "livree",
+        "non_livree",
+        "annulee"
+      ]
+    },
+    "public.statut_demande_ramassage": {
+      "name": "statut_demande_ramassage",
+      "schema": "public",
+      "values": [
+        "en_attente",
+        "validee",
+        "en_cours",
+        "terminee",
+        "annulee"
+      ]
+    },
+    "public.statut_paiement": {
+      "name": "statut_paiement",
+      "schema": "public",
+      "values": [
+        "en_attente",
+        "reussi",
+        "echoue",
+        "rembourse"
+      ]
+    },
+    "public.statut_validation": {
+      "name": "statut_validation",
+      "schema": "public",
+      "values": [
+        "en_attente",
+        "valide",
+        "rejete",
+        "suspendu"
+      ]
+    },
+    "public.type_mouvement_stock": {
+      "name": "type_mouvement_stock",
+      "schema": "public",
+      "values": [
+        "entree_fournisseur",
+        "vente",
+        "ajustement",
+        "retour"
+      ]
+    },
+    "public.type_ramasseur": {
+      "name": "type_ramasseur",
+      "schema": "public",
+      "values": [
+        "particulier",
+        "societe"
+      ]
+    },
+    "public.type_service": {
+      "name": "type_service",
+      "schema": "public",
+      "values": [
+        "gaz",
+        "ramassage"
+      ]
+    }
+  },
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}
