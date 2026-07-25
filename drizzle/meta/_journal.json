@@ -22,6 +22,20 @@
       "when": 1784905339962,
       "tag": "0002_remarkable_lester",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1784964618731,
+      "tag": "0003_loose_dreaming_celestial",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1784964785380,
+      "tag": "0004_daily_thundra",
+      "breakpoints": true
     }
   ]
 }

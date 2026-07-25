@@ -162,10 +162,12 @@ export const authRouter = router({
       z.object({
         nom: z.string().min(2),
         telephone: z.string().min(8),
-        motDePasse: z.string().min(6),
+        codePin: z.string().regex(/^\d{4}$/, "Le code PIN doit comporter exactement 4 chiffres"),
         nomBoutique: z.string().min(2),
+        pays: z.string().min(2).default("Côte d'Ivoire"),
         ville: z.string().min(2),
         commune: z.string().optional(),
+        quartier: z.string().optional(),
         adresse: z.string().optional(),
         latitude: z.number().optional(),
         longitude: z.number().optional(),
@@ -181,7 +183,10 @@ export const authRouter = router({
         throw new TRPCError({ code: "CONFLICT", message: "Ce numéro est déjà utilisé" });
       }
 
-      const motDePasseHash = await bcrypt.hash(input.motDePasse, 10);
+      // Le code PIN est haché exactement comme un mot de passe classique (bcrypt) ; sa plus
+      // faible entropie (4 chiffres) est compensée côté connexion par un verrouillage temporaire
+      // après plusieurs tentatives échouées (voir la mutation `connexion`).
+      const motDePasseHash = await bcrypt.hash(input.codePin, 10);
 
       const [user] = await db
         .insert(utilisateurs)
@@ -198,8 +203,10 @@ export const authRouter = router({
       await db.insert(boutiquesGaz).values({
         utilisateurId: user.id,
         nomBoutique: input.nomBoutique,
+        pays: input.pays,
         ville: input.ville,
         commune: input.commune,
+        quartier: input.quartier,
         adresse: input.adresse,
         latitude: input.latitude,
         longitude: input.longitude,
@@ -225,13 +232,46 @@ export const authRouter = router({
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Identifiants incorrects" });
       }
 
+      // Compte temporairement verrouillé suite à trop de tentatives échouées
+      if (user.verrouilleJusqua && user.verrouilleJusqua > new Date()) {
+        const minutesRestantes = Math.ceil((user.verrouilleJusqua.getTime() - Date.now()) / 60000);
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: `Trop de tentatives incorrectes. Réessayez dans ${minutesRestantes} min.`,
+        });
+      }
+
       const motDePasseValide = await bcrypt.compare(input.motDePasse, user.motDePasseHash);
+
       if (!motDePasseValide) {
+        const nouvellesTentatives = user.tentativesEchouees + 1;
+        const SEUIL_VERROUILLAGE = 5;
+
+        await db
+          .update(utilisateurs)
+          .set(
+            nouvellesTentatives >= SEUIL_VERROUILLAGE
+              ? {
+                  tentativesEchouees: 0,
+                  verrouilleJusqua: new Date(Date.now() + 15 * 60 * 1000), // 15 minutes
+                }
+              : { tentativesEchouees: nouvellesTentatives }
+          )
+          .where(eq(utilisateurs.id, user.id));
+
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Identifiants incorrects" });
       }
 
       if (!user.actif) {
         throw new TRPCError({ code: "FORBIDDEN", message: "Compte désactivé" });
+      }
+
+      // Connexion réussie : on réinitialise le compteur d'échecs
+      if (user.tentativesEchouees > 0 || user.verrouilleJusqua) {
+        await db
+          .update(utilisateurs)
+          .set({ tentativesEchouees: 0, verrouilleJusqua: null })
+          .where(eq(utilisateurs.id, user.id));
       }
 
       return { token: genererToken(user), user: { id: user.id, nom: user.nom, role: user.role } };

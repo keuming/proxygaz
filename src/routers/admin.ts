@@ -335,10 +335,12 @@ export const adminRouter = router({
       z.object({
         nom: z.string().min(2),
         telephone: z.string().min(8),
-        motDePasse: z.string().min(6),
+        codePin: z.string().regex(/^\d{4}$/, "Le code PIN doit comporter exactement 4 chiffres"),
         nomBoutique: z.string().min(2),
+        pays: z.string().min(2).default("Côte d'Ivoire"),
         ville: z.string().min(2),
         commune: z.string().optional(),
+        quartier: z.string().optional(),
         adresse: z.string().optional(),
         latitude: z.number().optional(),
         longitude: z.number().optional(),
@@ -356,7 +358,7 @@ export const adminRouter = router({
         throw new TRPCError({ code: "CONFLICT", message: "Ce numéro est déjà utilisé" });
       }
 
-      const motDePasseHash = await bcrypt.hash(input.motDePasse, 10);
+      const motDePasseHash = await bcrypt.hash(input.codePin, 10);
 
       const [user] = await db
         .insert(utilisateurs)
@@ -375,8 +377,10 @@ export const adminRouter = router({
         .values({
           utilisateurId: user.id,
           nomBoutique: input.nomBoutique,
+          pays: input.pays,
           ville: input.ville,
           commune: input.commune,
+          quartier: input.quartier,
           adresse: input.adresse,
           latitude: input.latitude,
           longitude: input.longitude,
