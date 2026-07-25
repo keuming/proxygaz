@@ -217,6 +217,9 @@ export const commandesGaz = pgTable("commandes_gaz", {
   statut: statutCommandeGazEnum("statut").notNull().default("en_attente"),
   livreurNom: varchar("livreur_nom", { length: 120 }),
   livreurTelephone: varchar("livreur_telephone", { length: 20 }),
+  modePaiement: modePaiementEnum("mode_paiement"), // choisi par le client au checkout
+  encaisse: boolean("encaisse").notNull().default(false), // true dès que le montant est effectivement perçu
+  encaisseAt: timestamp("encaisse_at"),
   notes: text("notes"),
   raisonNonLivraison: text("raison_non_livraison"),
   createdAt: timestamp("created_at").defaultNow().notNull(),

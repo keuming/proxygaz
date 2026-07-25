@@ -43,6 +43,13 @@
       "when": 1784965573225,
       "tag": "0005_superb_quasar",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1784968645985,
+      "tag": "0006_ordinary_firebrand",
+      "breakpoints": true
     }
   ]
 }

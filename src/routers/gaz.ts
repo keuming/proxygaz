@@ -195,6 +195,7 @@ export const gazRouter = router({
         latitude: z.number().optional(),
         longitude: z.number().optional(),
         notes: z.string().optional(),
+        modePaiement: z.enum(["mobile_money", "especes_livraison"]).optional(),
         // Renseignés uniquement si la personne n'est pas déjà connectée
         nomClient: z.string().min(2).optional(),
         telephoneClient: z.string().min(8).optional(),
@@ -313,6 +314,10 @@ export const gazRouter = router({
       const prixUnitaire = parseFloat(marque.prixRecharge);
       const prixTotal = prixUnitaire * input.quantite;
 
+      // Le mobile money est considéré encaissé dès la confirmation du paiement au checkout ;
+      // les espèces ne sont encaissées qu'à la livraison effective (voir marquerLivree).
+      const encaisseImmediatement = input.modePaiement === "mobile_money";
+
       const [commande] = await db
         .insert(commandesGaz)
         .values({
@@ -326,6 +331,9 @@ export const gazRouter = router({
           longitude: input.longitude,
           prixTotal: prixTotal.toString(),
           notes: input.notes,
+          modePaiement: input.modePaiement,
+          encaisse: encaisseImmediatement,
+          encaisseAt: encaisseImmediatement ? new Date() : undefined,
           statut: "en_attente",
         })
         .returning();
@@ -527,7 +535,14 @@ export const gazRouter = router({
 
       const [commande] = await db
         .update(commandesGaz)
-        .set({ statut: "livree", livreeAt: new Date() })
+        .set({
+          statut: "livree",
+          livreeAt: new Date(),
+          // Les espèces sont encaissées à cet instant précis (remise en main propre au livreur/boutique) ;
+          // le mobile money était déjà marqué encaissé au moment du paiement simulé au checkout.
+          encaisse: sql`CASE WHEN ${commandesGaz.modePaiement} = 'especes_livraison' THEN true ELSE ${commandesGaz.encaisse} END`,
+          encaisseAt: sql`CASE WHEN ${commandesGaz.modePaiement} = 'especes_livraison' AND ${commandesGaz.encaisse} = false THEN now() ELSE ${commandesGaz.encaisseAt} END`,
+        })
         .where(
           and(
             eq(commandesGaz.id, input.commandeId),
@@ -1001,6 +1016,58 @@ export const gazRouter = router({
     return rows.map((r) => ({ ...r.mouvement, marqueNom: r.marqueNom, marqueTaille: r.marqueTaille }));
   }),
 
+  // ---- Encaissements (fenêtre de monitoring caisse : espèces vs MobilePay) ----
+
+  mesEncaissements: requireRole("boutique")
+    .input(
+      z
+        .object({
+          depuis: z.string().datetime().optional(), // ISO 8601, filtre optionnel sur encaisseAt
+        })
+        .optional()
+    )
+    .query(async ({ ctx, input }) => {
+      const [boutique] = await db
+        .select()
+        .from(boutiquesGaz)
+        .where(eq(boutiquesGaz.utilisateurId, ctx.user.id));
+      if (!boutique) throw new TRPCError({ code: "NOT_FOUND", message: "Profil boutique introuvable" });
+
+      const conditions = [eq(commandesGaz.boutiqueId, boutique.id), eq(commandesGaz.encaisse, true)];
+      if (input?.depuis) {
+        conditions.push(sql`${commandesGaz.encaisseAt} >= ${input.depuis}::timestamp`);
+      }
+
+      const rows = await db
+        .select({
+          commande: commandesGaz,
+          clientNom: schema.utilisateurs.nom,
+        })
+        .from(commandesGaz)
+        .innerJoin(schema.utilisateurs, eq(commandesGaz.clientId, schema.utilisateurs.id))
+        .where(and(...conditions))
+        .orderBy(desc(commandesGaz.encaisseAt));
+
+      const transactions = rows.map((r) => ({ ...r.commande, clientNom: r.clientNom }));
+
+      const totalEspeces = transactions
+        .filter((t) => t.modePaiement === "especes_livraison")
+        .reduce((s, t) => s + Number(t.prixTotal), 0);
+      const totalMobilePay = transactions
+        .filter((t) => t.modePaiement === "mobile_money")
+        .reduce((s, t) => s + Number(t.prixTotal), 0);
+
+      return {
+        transactions,
+        totaux: {
+          especes: totalEspeces,
+          mobilePay: totalMobilePay,
+          global: totalEspeces + totalMobilePay,
+          nbTransactions: transactions.length,
+        },
+      };
+    }),
+
   // ---- Espace livreur (self-service) ----
 
   mesLivraisons: requireRole("livreur").query(async ({ ctx }) => {
@@ -1017,5 +1084,40 @@ export const gazRouter = router({
       .select()
       .from(commandesGaz)
       .where(eq(commandesGaz.livreurId, profilLivreur.id));
+  }),
+
+  statsLivreur: requireRole("livreur").query(async ({ ctx }) => {
+    const [profilLivreur] = await db
+      .select()
+      .from(livreurs)
+      .where(eq(livreurs.utilisateurId, ctx.user.id));
+
+    if (!profilLivreur) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "Profil livreur introuvable" });
+    }
+
+    const debutMois = new Date();
+    debutMois.setDate(1);
+    debutMois.setHours(0, 0, 0, 0);
+
+    const toutes = await db
+      .select()
+      .from(commandesGaz)
+      .where(eq(commandesGaz.livreurId, profilLivreur.id));
+
+    const livrees = toutes.filter((c) => c.statut === "livree");
+    const livreesCeMois = livrees.filter((c) => c.livreeAt && c.livreeAt >= debutMois);
+    const nonLivrees = toutes.filter((c) => c.statut === "non_livree");
+
+    return {
+      totalLivraisons: livrees.length,
+      livraisonsCeMois: livreesCeMois.length,
+      valeurLivreeCeMois: livreesCeMois.reduce((s, c) => s + Number(c.prixTotal), 0),
+      tauxReussite:
+        livrees.length + nonLivrees.length > 0
+          ? Math.round((livrees.length / (livrees.length + nonLivrees.length)) * 100)
+          : 100,
+      enCoursActuellement: toutes.filter((c) => c.statut === "en_livraison").length,
+    };
   }),
 });

@@ -283,4 +283,34 @@ export const ramassageRouter = router({
       .from(demandesRamassage)
       .where(eq(demandesRamassage.ramasseurId, profilRamasseur.id));
   }),
+
+  statsRamasseur: requireRole("ramasseur").query(async ({ ctx }) => {
+    const [profilRamasseur] = await db
+      .select()
+      .from(ramasseurs)
+      .where(eq(ramasseurs.utilisateurId, ctx.user.id));
+
+    if (!profilRamasseur) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "Profil ramasseur introuvable" });
+    }
+
+    const debutMois = new Date();
+    debutMois.setDate(1);
+    debutMois.setHours(0, 0, 0, 0);
+
+    const toutes = await db
+      .select()
+      .from(demandesRamassage)
+      .where(eq(demandesRamassage.ramasseurId, profilRamasseur.id));
+
+    const terminees = toutes.filter((d) => d.statut === "terminee");
+    const termineesCeMois = terminees.filter((d) => d.terminatedAt && d.terminatedAt >= debutMois);
+
+    return {
+      totalRamassages: terminees.length,
+      ramassagesCeMois: termineesCeMois.length,
+      enCoursActuellement: toutes.filter((d) => d.statut === "en_cours").length,
+      valideesEnAttenteDeDemarrage: toutes.filter((d) => d.statut === "validee").length,
+    };
+  }),
 });
