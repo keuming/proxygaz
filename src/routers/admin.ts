@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { eq, desc, count, and } from "drizzle-orm";
+import { eq, desc, count, and, sql, like, inArray } from "drizzle-orm";
 import { router, requireRole } from "../trpc.js";
 import { db, schema } from "../db/index.js";
 
@@ -457,5 +457,162 @@ export const adminRouter = router({
         })
         .returning();
       return créé;
+    }),
+
+  // ============================================================
+  // BACKOFFICE SUPPORT / APRÈS-VENTE
+  // ============================================================
+
+  // Vue globale de tous les encaissements (gaz + ramassage), toutes boutiques et
+  // ramasseurs confondus — indispensable pour la comptabilité et le support client,
+  // qui n'ont pas à se connecter sur chaque compte individuel pour vérifier un paiement.
+  encaissementsGlobal: adminProcedure
+    .input(z.object({ depuis: z.string().datetime().optional() }).optional())
+    .query(async ({ input }) => {
+      const conditionsGaz = [eq(commandesGaz.encaisse, true)];
+      if (input?.depuis) {
+        conditionsGaz.push(sql`${commandesGaz.encaisseAt} >= ${input.depuis}::timestamp`);
+      }
+
+      const clientUtilisateurs = schema.utilisateurs;
+
+      const lignesGaz = await db
+        .select({
+          commande: commandesGaz,
+          clientNom: clientUtilisateurs.nom,
+          clientTelephone: clientUtilisateurs.telephone,
+          boutiqueNom: boutiquesGaz.nomBoutique,
+        })
+        .from(commandesGaz)
+        .innerJoin(clientUtilisateurs, eq(commandesGaz.clientId, clientUtilisateurs.id))
+        .leftJoin(boutiquesGaz, eq(commandesGaz.boutiqueId, boutiquesGaz.id))
+        .where(and(...conditionsGaz))
+        .orderBy(desc(commandesGaz.encaisseAt));
+
+      const conditionsRamassage = [eq(demandesRamassage.encaisse, true)];
+      if (input?.depuis) {
+        conditionsRamassage.push(sql`${demandesRamassage.encaisseAt} >= ${input.depuis}::timestamp`);
+      }
+
+      const lignesRamassage = await db
+        .select({
+          demande: demandesRamassage,
+          clientNom: clientUtilisateurs.nom,
+          clientTelephone: clientUtilisateurs.telephone,
+          ramasseurNomSociete: ramasseurs.nomSociete,
+        })
+        .from(demandesRamassage)
+        .innerJoin(clientUtilisateurs, eq(demandesRamassage.clientId, clientUtilisateurs.id))
+        .leftJoin(ramasseurs, eq(demandesRamassage.ramasseurId, ramasseurs.id))
+        .where(and(...conditionsRamassage));
+
+      const transactions = [
+        ...lignesGaz.map((r) => ({
+          id: r.commande.id,
+          type: "gaz" as const,
+          service: "Bouteille de gaz",
+          clientNom: r.clientNom,
+          clientTelephone: r.clientTelephone,
+          partenaireNom: r.boutiqueNom ?? "—",
+          montant: Number(r.commande.prixTotal),
+          modePaiement: r.commande.modePaiement,
+          encaisseAt: r.commande.encaisseAt,
+        })),
+        ...lignesRamassage.map((r) => ({
+          id: r.demande.id,
+          type: "ramassage" as const,
+          service: "Ramassage",
+          clientNom: r.clientNom,
+          clientTelephone: r.clientTelephone,
+          partenaireNom: r.ramasseurNomSociete ?? "—",
+          montant: Number(r.demande.prixPropose ?? 0),
+          modePaiement: r.demande.modePaiement,
+          encaisseAt: r.demande.encaisseAt,
+        })),
+      ].sort((a, b) => {
+        const dateA = a.encaisseAt ? new Date(a.encaisseAt).getTime() : 0;
+        const dateB = b.encaisseAt ? new Date(b.encaisseAt).getTime() : 0;
+        return dateB - dateA;
+      });
+
+      const totalEspeces = transactions
+        .filter((t) => t.modePaiement === "especes_livraison")
+        .reduce((s, t) => s + t.montant, 0);
+      const totalMobilePay = transactions
+        .filter((t) => t.modePaiement === "mobile_money")
+        .reduce((s, t) => s + t.montant, 0);
+
+      return {
+        transactions,
+        totaux: {
+          especes: totalEspeces,
+          mobilePay: totalMobilePay,
+          global: totalEspeces + totalMobilePay,
+          nbTransactions: transactions.length,
+        },
+      };
+    }),
+
+  // Recherche par numéro de téléphone (client, boutique, livreur ou ramasseur) — retourne
+  // l'historique complet pour permettre au support de traiter un litige en un seul écran :
+  // qui a commandé quoi, avec qui, comment ça a été payé, et à quelle étape ça en est.
+  rechercheParTelephone: adminProcedure
+    .input(z.object({ telephone: z.string().min(3) }))
+    .query(async ({ input }) => {
+      const motif = `%${input.telephone}%`;
+
+      const utilisateursTrouves = await db
+        .select()
+        .from(utilisateurs)
+        .where(like(utilisateurs.telephone, motif));
+
+      if (utilisateursTrouves.length === 0) {
+        return { utilisateurs: [], commandesGaz: [], demandesRamassage: [] };
+      }
+
+      const ids = utilisateursTrouves.map((u) => u.id);
+
+      // Commandes gaz où cet utilisateur est le client
+      const commandesClient = await db
+        .select({
+          commande: commandesGaz,
+          boutiqueNom: boutiquesGaz.nomBoutique,
+          boutiqueTelephone: schema.utilisateurs.telephone,
+        })
+        .from(commandesGaz)
+        .leftJoin(boutiquesGaz, eq(commandesGaz.boutiqueId, boutiquesGaz.id))
+        .leftJoin(schema.utilisateurs, eq(boutiquesGaz.utilisateurId, schema.utilisateurs.id))
+        .where(inArray(commandesGaz.clientId, ids))
+        .orderBy(desc(commandesGaz.createdAt));
+
+      // Demandes de ramassage où cet utilisateur est le client
+      const demandesClient = await db
+        .select({
+          demande: demandesRamassage,
+          ramasseurNomSociete: ramasseurs.nomSociete,
+        })
+        .from(demandesRamassage)
+        .leftJoin(ramasseurs, eq(demandesRamassage.ramasseurId, ramasseurs.id))
+        .where(inArray(demandesRamassage.clientId, ids))
+        .orderBy(desc(demandesRamassage.createdAt));
+
+      return {
+        utilisateurs: utilisateursTrouves.map((u) => ({
+          id: u.id,
+          nom: u.nom,
+          telephone: u.telephone,
+          role: u.role,
+          createdAt: u.createdAt,
+        })),
+        commandesGaz: commandesClient.map((r) => ({
+          ...r.commande,
+          boutiqueNom: r.boutiqueNom,
+          boutiqueTelephone: r.boutiqueTelephone,
+        })),
+        demandesRamassage: demandesClient.map((r) => ({
+          ...r.demande,
+          ramasseurNomSociete: r.ramasseurNomSociete,
+        })),
+      };
     }),
 });
