@@ -1027,10 +1027,19 @@ export const gazRouter = router({
         .optional()
     )
     .query(async ({ ctx, input }) => {
-      const [boutique] = await db
-        .select()
+      const boutiqueRows = await db
+        .select({
+          boutique: boutiquesGaz,
+          boutiqueTelephone: schema.utilisateurs.telephone,
+        })
         .from(boutiquesGaz)
+        .innerJoin(schema.utilisateurs, eq(boutiquesGaz.utilisateurId, schema.utilisateurs.id))
         .where(eq(boutiquesGaz.utilisateurId, ctx.user.id));
+
+      const boutique = boutiqueRows[0]
+        ? { ...boutiqueRows[0].boutique, telephone: boutiqueRows[0].boutiqueTelephone }
+        : null;
+
       if (!boutique) throw new TRPCError({ code: "NOT_FOUND", message: "Profil boutique introuvable" });
 
       const conditions = [eq(commandesGaz.boutiqueId, boutique.id), eq(commandesGaz.encaisse, true)];
@@ -1042,13 +1051,18 @@ export const gazRouter = router({
         .select({
           commande: commandesGaz,
           clientNom: schema.utilisateurs.nom,
+          clientTelephone: schema.utilisateurs.telephone,
         })
         .from(commandesGaz)
         .innerJoin(schema.utilisateurs, eq(commandesGaz.clientId, schema.utilisateurs.id))
         .where(and(...conditions))
         .orderBy(desc(commandesGaz.encaisseAt));
 
-      const transactions = rows.map((r) => ({ ...r.commande, clientNom: r.clientNom }));
+      const transactions = rows.map((r) => ({
+        ...r.commande,
+        clientNom: r.clientNom,
+        clientTelephone: r.clientTelephone,
+      }));
 
       const totalEspeces = transactions
         .filter((t) => t.modePaiement === "especes_livraison")
@@ -1058,6 +1072,7 @@ export const gazRouter = router({
         .reduce((s, t) => s + Number(t.prixTotal), 0);
 
       return {
+        boutique: { nom: boutique.nomBoutique, telephone: boutique.telephone },
         transactions,
         totaux: {
           especes: totalEspeces,

@@ -329,11 +329,17 @@ export const ramassageRouter = router({
   mesEncaissements: requireRole("ramasseur")
     .input(z.object({ depuis: z.string().datetime().optional() }).optional())
     .query(async ({ ctx, input }) => {
-      const [profilRamasseur] = await db
-        .select()
+      const profilRows = await db
+        .select({
+          ramasseur: ramasseurs,
+          ramasseurTelephone: schema.utilisateurs.telephone,
+          ramasseurNom: schema.utilisateurs.nom,
+        })
         .from(ramasseurs)
+        .innerJoin(schema.utilisateurs, eq(ramasseurs.utilisateurId, schema.utilisateurs.id))
         .where(eq(ramasseurs.utilisateurId, ctx.user.id));
 
+      const profilRamasseur = profilRows[0]?.ramasseur;
       if (!profilRamasseur) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Profil ramasseur introuvable" });
       }
@@ -350,12 +356,17 @@ export const ramassageRouter = router({
         .select({
           demande: demandesRamassage,
           clientNom: schema.utilisateurs.nom,
+          clientTelephone: schema.utilisateurs.telephone,
         })
         .from(demandesRamassage)
         .innerJoin(schema.utilisateurs, eq(demandesRamassage.clientId, schema.utilisateurs.id))
         .where(and(...conditions));
 
-      const transactions = rows.map((r) => ({ ...r.demande, clientNom: r.clientNom }));
+      const transactions = rows.map((r) => ({
+        ...r.demande,
+        clientNom: r.clientNom,
+        clientTelephone: r.clientTelephone,
+      }));
 
       const totalEspeces = transactions
         .filter((t) => t.modePaiement === "especes_livraison")
@@ -365,6 +376,10 @@ export const ramassageRouter = router({
         .reduce((s, t) => s + Number(t.prixPropose ?? 0), 0);
 
       return {
+        ramasseur: {
+          nom: profilRows[0].ramasseur.nomSociete ?? profilRows[0].ramasseurNom,
+          telephone: profilRows[0].ramasseurTelephone,
+        },
         transactions,
         totaux: {
           especes: totalEspeces,
