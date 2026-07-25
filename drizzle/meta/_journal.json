@@ -57,6 +57,13 @@
       "when": 1784970480544,
       "tag": "0007_bouncy_squadron_supreme",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1784974241041,
+      "tag": "0008_living_flatman",
+      "breakpoints": true
     }
   ]
 }

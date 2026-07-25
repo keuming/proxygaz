@@ -1,11 +1,11 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, gt, sql, desc } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { router, publicProcedure, protectedProcedure, requireRole } from "../trpc.js";
 import { db, schema } from "../db/index.js";
 
-const { demandesRamassage, ramasseurs, notifications } = schema;
+const { demandesRamassage, ramasseurs, notifications, mouvementsCredit, demandesCredit } = schema;
 
 export const ramassageRouter = router({
   // Le client crée une demande de ramassage — fonctionne connecté OU en tant qu'invité,
@@ -155,6 +155,20 @@ export const ramassageRouter = router({
         });
       }
 
+      // Frais de service ProxiGaz : 1 crédit (100 FCFA) réservé avant d'accepter la demande.
+      const [ramasseurDebite] = await db
+        .update(ramasseurs)
+        .set({ credits: sql`${ramasseurs.credits} - 1` })
+        .where(and(eq(ramasseurs.id, profilRamasseur.id), gt(ramasseurs.credits, 0)))
+        .returning();
+
+      if (!ramasseurDebite) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Crédit insuffisant. Achetez des crédits pour accepter des demandes.",
+        });
+      }
+
       // UPDATE atomique conditionné sur le statut actuel : un seul appel concurrent
       // peut réussir à faire passer la ligne de 'en_attente' à 'validee'.
       const [demandeMiseAJour] = await db
@@ -173,12 +187,36 @@ export const ramassageRouter = router({
         .returning();
 
       if (!demandeMiseAJour) {
-        // Soit la demande n'existe pas, soit un autre ramasseur a été plus rapide
+        // La demande a été prise entretemps par un autre ramasseur : on rembourse le crédit.
+        const [rembourse] = await db
+          .update(ramasseurs)
+          .set({ credits: sql`${ramasseurs.credits} + 1` })
+          .where(eq(ramasseurs.id, profilRamasseur.id))
+          .returning();
+
+        await db.insert(mouvementsCredit).values({
+          ramasseurId: profilRamasseur.id,
+          typeMouvement: "ajustement",
+          quantite: 1,
+          soldeApres: rembourse.credits,
+          reference: input.demandeId,
+          notes: "Remboursement : demande déjà prise par un autre ramasseur",
+        });
+
         throw new TRPCError({
           code: "CONFLICT",
           message: "Cette demande a déjà été prise par un autre ramasseur",
         });
       }
+
+      await db.insert(mouvementsCredit).values({
+        ramasseurId: profilRamasseur.id,
+        typeMouvement: "debit_ramassage",
+        quantite: -1,
+        soldeApres: ramasseurDebite.credits,
+        reference: demandeMiseAJour.id,
+        notes: "Frais de service ProxiGaz (100 FCFA)",
+      });
 
       await db.insert(notifications).values({
         utilisateurId: demandeMiseAJour.clientId,
@@ -388,5 +426,74 @@ export const ramassageRouter = router({
           nbTransactions: transactions.length,
         },
       };
+    }),
+
+  // ---- Système de crédit (frais de service : 1 crédit = 100 FCFA / demande acceptée) ----
+
+  mesCreditsRamasseur: requireRole("ramasseur").query(async ({ ctx }) => {
+    const [profilRamasseur] = await db
+      .select()
+      .from(ramasseurs)
+      .where(eq(ramasseurs.utilisateurId, ctx.user.id));
+    if (!profilRamasseur) throw new TRPCError({ code: "NOT_FOUND", message: "Profil ramasseur introuvable" });
+    return { credits: profilRamasseur.credits };
+  }),
+
+  mesMouvementsCreditRamasseur: requireRole("ramasseur").query(async ({ ctx }) => {
+    const [profilRamasseur] = await db
+      .select()
+      .from(ramasseurs)
+      .where(eq(ramasseurs.utilisateurId, ctx.user.id));
+    if (!profilRamasseur) throw new TRPCError({ code: "NOT_FOUND", message: "Profil ramasseur introuvable" });
+
+    return db
+      .select()
+      .from(mouvementsCredit)
+      .where(eq(mouvementsCredit.ramasseurId, profilRamasseur.id))
+      .orderBy(desc(mouvementsCredit.createdAt))
+      .limit(100);
+  }),
+
+  mesDemandesCreditRamasseur: requireRole("ramasseur").query(async ({ ctx }) => {
+    const [profilRamasseur] = await db
+      .select()
+      .from(ramasseurs)
+      .where(eq(ramasseurs.utilisateurId, ctx.user.id));
+    if (!profilRamasseur) throw new TRPCError({ code: "NOT_FOUND", message: "Profil ramasseur introuvable" });
+
+    return db
+      .select()
+      .from(demandesCredit)
+      .where(eq(demandesCredit.ramasseurId, profilRamasseur.id))
+      .orderBy(desc(demandesCredit.createdAt));
+  }),
+
+  demanderCreditRamasseur: requireRole("ramasseur")
+    .input(
+      z.object({
+        quantiteCredits: z.number().int().positive(),
+        referencePaiement: z.string().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [profilRamasseur] = await db
+        .select()
+        .from(ramasseurs)
+        .where(eq(ramasseurs.utilisateurId, ctx.user.id));
+      if (!profilRamasseur) throw new TRPCError({ code: "NOT_FOUND", message: "Profil ramasseur introuvable" });
+
+      const [demande] = await db
+        .insert(demandesCredit)
+        .values({
+          ramasseurId: profilRamasseur.id,
+          quantiteCredits: input.quantiteCredits,
+          montantPaye: (input.quantiteCredits * 100).toString(),
+          modePaiement: "mobile_money",
+          referencePaiement: input.referencePaiement,
+          statut: "en_attente",
+        })
+        .returning();
+
+      return demande;
     }),
 });

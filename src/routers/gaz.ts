@@ -15,6 +15,8 @@ const {
   fournisseurs,
   approvisionnements,
   mouvementsStock,
+  mouvementsCredit,
+  demandesCredit,
   statutCommandeGazEnum,
 } = schema;
 
@@ -483,6 +485,22 @@ export const gazRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: "Profil livreur non validé" });
       }
 
+      // Frais de service ProxiGaz : 1 crédit (100 FCFA) réservé avant d'accepter la course.
+      // Débit atomique conditionné sur credits > 0, pour éviter tout passage en négatif
+      // en cas d'acceptations concurrentes.
+      const [livreurDebite] = await db
+        .update(livreurs)
+        .set({ credits: sql`${livreurs.credits} - 1` })
+        .where(and(eq(livreurs.id, profilLivreur.id), gt(livreurs.credits, 0)))
+        .returning();
+
+      if (!livreurDebite) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Crédit insuffisant. Achetez des crédits pour accepter des courses.",
+        });
+      }
+
       const [utilisateurLivreur] = await db
         .select({ nom: schema.utilisateurs.nom, telephone: schema.utilisateurs.telephone })
         .from(schema.utilisateurs)
@@ -500,11 +518,36 @@ export const gazRouter = router({
         .returning();
 
       if (!commande) {
+        // La course a été prise entretemps par un autre livreur : on rembourse le crédit réservé.
+        const [rembourse] = await db
+          .update(livreurs)
+          .set({ credits: sql`${livreurs.credits} + 1` })
+          .where(eq(livreurs.id, profilLivreur.id))
+          .returning();
+
+        await db.insert(mouvementsCredit).values({
+          livreurId: profilLivreur.id,
+          typeMouvement: "ajustement",
+          quantite: 1,
+          soldeApres: rembourse.credits,
+          reference: input.commandeId,
+          notes: "Remboursement : course déjà prise par un autre livreur",
+        });
+
         throw new TRPCError({
           code: "CONFLICT",
           message: "Cette livraison a déjà été prise par un autre livreur",
         });
       }
+
+      await db.insert(mouvementsCredit).values({
+        livreurId: profilLivreur.id,
+        typeMouvement: "debit_livraison",
+        quantite: -1,
+        soldeApres: livreurDebite.credits,
+        reference: commande.id,
+        notes: "Frais de service ProxiGaz (100 FCFA)",
+      });
 
       await db.insert(notifications).values({
         utilisateurId: commande.clientId,
@@ -1135,4 +1178,75 @@ export const gazRouter = router({
       enCoursActuellement: toutes.filter((c) => c.statut === "en_livraison").length,
     };
   }),
+
+  // ---- Système de crédit (frais de service : 1 crédit = 100 FCFA / course acceptée) ----
+
+  mesCreditsLivreur: requireRole("livreur").query(async ({ ctx }) => {
+    const [profilLivreur] = await db
+      .select()
+      .from(livreurs)
+      .where(eq(livreurs.utilisateurId, ctx.user.id));
+    if (!profilLivreur) throw new TRPCError({ code: "NOT_FOUND", message: "Profil livreur introuvable" });
+    return { credits: profilLivreur.credits };
+  }),
+
+  mesMouvementsCreditLivreur: requireRole("livreur").query(async ({ ctx }) => {
+    const [profilLivreur] = await db
+      .select()
+      .from(livreurs)
+      .where(eq(livreurs.utilisateurId, ctx.user.id));
+    if (!profilLivreur) throw new TRPCError({ code: "NOT_FOUND", message: "Profil livreur introuvable" });
+
+    return db
+      .select()
+      .from(mouvementsCredit)
+      .where(eq(mouvementsCredit.livreurId, profilLivreur.id))
+      .orderBy(desc(mouvementsCredit.createdAt))
+      .limit(100);
+  }),
+
+  mesDemandesCreditLivreur: requireRole("livreur").query(async ({ ctx }) => {
+    const [profilLivreur] = await db
+      .select()
+      .from(livreurs)
+      .where(eq(livreurs.utilisateurId, ctx.user.id));
+    if (!profilLivreur) throw new TRPCError({ code: "NOT_FOUND", message: "Profil livreur introuvable" });
+
+    return db
+      .select()
+      .from(demandesCredit)
+      .where(eq(demandesCredit.livreurId, profilLivreur.id))
+      .orderBy(desc(demandesCredit.createdAt));
+  }),
+
+  // Le livreur envoie une demande d'achat de crédit après un paiement MobilePay simulé.
+  // La mise à disposition effective (incrémentation du solde) se fait par l'admin.
+  demanderCreditLivreur: requireRole("livreur")
+    .input(
+      z.object({
+        quantiteCredits: z.number().int().positive(),
+        referencePaiement: z.string().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [profilLivreur] = await db
+        .select()
+        .from(livreurs)
+        .where(eq(livreurs.utilisateurId, ctx.user.id));
+      if (!profilLivreur) throw new TRPCError({ code: "NOT_FOUND", message: "Profil livreur introuvable" });
+
+      const [demande] = await db
+        .insert(demandesCredit)
+        .values({
+          livreurId: profilLivreur.id,
+          quantiteCredits: input.quantiteCredits,
+          montantPaye: (input.quantiteCredits * 100).toString(),
+          modePaiement: "mobile_money",
+          referencePaiement: input.referencePaiement,
+          statut: "en_attente",
+        })
+        .returning();
+
+      return demande;
+    }),
 });

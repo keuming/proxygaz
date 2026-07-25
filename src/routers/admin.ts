@@ -13,10 +13,13 @@ const {
   utilisateurs,
   marquesGaz,
   stockBoutique,
+  demandesCredit,
+  mouvementsCredit,
   statutCommandeGazEnum,
 } = schema;
 
 const adminProcedure = requireRole("admin");
+const CREDITS_BIENVENUE = 5; // offerts à la création d'un compte livreur/ramasseur
 
 export const adminRouter = router({
   // Vue d'ensemble pour la page d'accueil du dashboard
@@ -230,8 +233,17 @@ export const adminRouter = router({
           latitude: input.latitude,
           longitude: input.longitude,
           statutValidation: "valide", // créé par l'admin : validé d'office
+          credits: CREDITS_BIENVENUE,
         })
         .returning();
+
+      await db.insert(mouvementsCredit).values({
+        ramasseurId: ramasseur.id,
+        typeMouvement: "ajustement",
+        quantite: CREDITS_BIENVENUE,
+        soldeApres: CREDITS_BIENVENUE,
+        notes: "Crédits de bienvenue offerts à la création du compte",
+      });
 
       return { utilisateur: user, ramasseur };
     }),
@@ -324,8 +336,17 @@ export const adminRouter = router({
           latitude: input.latitude,
           longitude: input.longitude,
           statutValidation: "valide", // créé par l'admin : validé d'office
+          credits: CREDITS_BIENVENUE,
         })
         .returning();
+
+      await db.insert(mouvementsCredit).values({
+        livreurId: livreur.id,
+        typeMouvement: "ajustement",
+        quantite: CREDITS_BIENVENUE,
+        soldeApres: CREDITS_BIENVENUE,
+        notes: "Crédits de bienvenue offerts à la création du compte",
+      });
 
       return { utilisateur: user, livreur };
     }),
@@ -614,5 +635,132 @@ export const adminRouter = router({
           ramasseurNomSociete: r.ramasseurNomSociete,
         })),
       };
+    }),
+
+  // ============================================================
+  // SYSTÈME DE CRÉDIT — file de mise à disposition (validation des demandes d'achat)
+  // ============================================================
+
+  listDemandesCredit: adminProcedure
+    .input(z.object({ statut: z.enum(["en_attente", "validee", "rejetee"]).optional() }).optional())
+    .query(async ({ input }) => {
+      const rows = await db
+        .select({
+          demande: demandesCredit,
+          livreurNom: utilisateurs.nom,
+          livreurTelephone: utilisateurs.telephone,
+        })
+        .from(demandesCredit)
+        .leftJoin(livreurs, eq(demandesCredit.livreurId, livreurs.id))
+        .leftJoin(utilisateurs, eq(livreurs.utilisateurId, utilisateurs.id))
+        .where(input?.statut ? eq(demandesCredit.statut, input.statut) : undefined)
+        .orderBy(desc(demandesCredit.createdAt));
+
+      // Les demandes de ramasseurs n'ont pas de livreur associé (jointure ci-dessus renvoie null) ;
+      // on complète séparément pour ceux-là.
+      const rowsRamasseur = await db
+        .select({
+          demande: demandesCredit,
+          ramasseurNom: utilisateurs.nom,
+          ramasseurTelephone: utilisateurs.telephone,
+          ramasseurNomSociete: ramasseurs.nomSociete,
+        })
+        .from(demandesCredit)
+        .leftJoin(ramasseurs, eq(demandesCredit.ramasseurId, ramasseurs.id))
+        .leftJoin(utilisateurs, eq(ramasseurs.utilisateurId, utilisateurs.id))
+        .where(input?.statut ? eq(demandesCredit.statut, input.statut) : undefined)
+        .orderBy(desc(demandesCredit.createdAt));
+
+      const resultats = [
+        ...rows
+          .filter((r) => r.demande.livreurId !== null)
+          .map((r) => ({
+            ...r.demande,
+            profil: "livreur" as const,
+            nomDemandeur: r.livreurNom,
+            telephoneDemandeur: r.livreurTelephone,
+          })),
+        ...rowsRamasseur
+          .filter((r) => r.demande.ramasseurId !== null)
+          .map((r) => ({
+            ...r.demande,
+            profil: "ramasseur" as const,
+            nomDemandeur: r.ramasseurNomSociete ?? r.ramasseurNom,
+            telephoneDemandeur: r.ramasseurTelephone,
+          })),
+      ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+      return resultats;
+    }),
+
+  // Mise à disposition effective : incrémente le solde du livreur/ramasseur et journalise.
+  validerDemandeCredit: adminProcedure
+    .input(z.object({ demandeId: z.string().uuid() }))
+    .mutation(async ({ input }) => {
+      const [demande] = await db
+        .update(demandesCredit)
+        .set({ statut: "validee", traiteeAt: new Date() })
+        .where(and(eq(demandesCredit.id, input.demandeId), eq(demandesCredit.statut, "en_attente")))
+        .returning();
+
+      if (!demande) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Demande introuvable ou déjà traitée",
+        });
+      }
+
+      if (demande.livreurId) {
+        const [maj] = await db
+          .update(livreurs)
+          .set({ credits: sql`${livreurs.credits} + ${demande.quantiteCredits}` })
+          .where(eq(livreurs.id, demande.livreurId))
+          .returning();
+
+        await db.insert(mouvementsCredit).values({
+          livreurId: demande.livreurId,
+          typeMouvement: "achat",
+          quantite: demande.quantiteCredits,
+          soldeApres: maj.credits,
+          reference: demande.id,
+          notes: `Achat de ${demande.quantiteCredits} crédit(s) — ${demande.montantPaye} FCFA`,
+        });
+      } else if (demande.ramasseurId) {
+        const [maj] = await db
+          .update(ramasseurs)
+          .set({ credits: sql`${ramasseurs.credits} + ${demande.quantiteCredits}` })
+          .where(eq(ramasseurs.id, demande.ramasseurId))
+          .returning();
+
+        await db.insert(mouvementsCredit).values({
+          ramasseurId: demande.ramasseurId,
+          typeMouvement: "achat",
+          quantite: demande.quantiteCredits,
+          soldeApres: maj.credits,
+          reference: demande.id,
+          notes: `Achat de ${demande.quantiteCredits} crédit(s) — ${demande.montantPaye} FCFA`,
+        });
+      }
+
+      return demande;
+    }),
+
+  rejeterDemandeCredit: adminProcedure
+    .input(z.object({ demandeId: z.string().uuid() }))
+    .mutation(async ({ input }) => {
+      const [demande] = await db
+        .update(demandesCredit)
+        .set({ statut: "rejetee", traiteeAt: new Date() })
+        .where(and(eq(demandesCredit.id, input.demandeId), eq(demandesCredit.statut, "en_attente")))
+        .returning();
+
+      if (!demande) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Demande introuvable ou déjà traitée",
+        });
+      }
+
+      return demande;
     }),
 });

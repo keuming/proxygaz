@@ -59,6 +59,19 @@ export const statutApprovisionnementEnum = pgEnum("statut_approvisionnement", [
   "annule",
 ]);
 
+export const statutDemandeCreditEnum = pgEnum("statut_demande_credit", [
+  "en_attente",   // demande d'achat envoyée, en attente de mise à disposition par l'admin
+  "validee",      // crédit effectivement ajouté au compte
+  "rejetee",
+]);
+
+export const typeMouvementCreditEnum = pgEnum("type_mouvement_credit", [
+  "achat",              // crédit ajouté suite à une demande validée par l'admin
+  "debit_livraison",    // 1 crédit consommé à l'acceptation d'une livraison de gaz
+  "debit_ramassage",    // 1 crédit consommé à l'acceptation d'un ramassage
+  "ajustement",         // correction manuelle par l'admin
+]);
+
 export const statutDemandeRamassageEnum = pgEnum("statut_demande_ramassage", [
   "en_attente",        // en attente qu'un ramasseur valide
   "validee",           // un ramasseur a pris la demande
@@ -199,6 +212,7 @@ export const livreurs = pgTable("livreurs", {
   statutValidation: statutValidationEnum("statut_validation").default("en_attente"),
   noteMoyenne: doublePrecision("note_moyenne").default(0),
   nombreLivraisons: integer("nombre_livraisons").notNull().default(0),
+  credits: integer("credits").notNull().default(0), // 1 crédit = 100 FCFA, débité à chaque livraison acceptée
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -247,6 +261,39 @@ export const ramasseurs = pgTable("ramasseurs", {
   statutValidation: statutValidationEnum("statut_validation").default("en_attente"),
   noteMoyenne: doublePrecision("note_moyenne").default(0),
   nombreRamassages: integer("nombre_ramassages").notNull().default(0),
+  credits: integer("credits").notNull().default(0), // 1 crédit = 100 FCFA, débité à chaque ramassage accepté
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// ============================================================
+// SYSTÈME DE CRÉDIT (frais de service ProxiGaz : 100 FCFA / course acceptée)
+// ============================================================
+
+// Demande d'achat de crédit envoyée par un livreur ou un ramasseur (l'un des deux FK est
+// renseigné, l'autre reste null). Payée par MobilePay (simulé), mise à disposition par l'admin.
+export const demandesCredit = pgTable("demandes_credit", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  livreurId: uuid("livreur_id").references(() => livreurs.id),
+  ramasseurId: uuid("ramasseur_id").references(() => ramasseurs.id),
+  quantiteCredits: integer("quantite_credits").notNull(),
+  montantPaye: decimal("montant_paye", { precision: 10, scale: 2 }).notNull(), // quantiteCredits * 100
+  modePaiement: modePaiementEnum("mode_paiement").notNull().default("mobile_money"),
+  referencePaiement: text("reference_paiement"), // opérateur/numéro simulés au checkout
+  statut: statutDemandeCreditEnum("statut").notNull().default("en_attente"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  traiteeAt: timestamp("traitee_at"),
+});
+
+// Registre des mouvements de crédit (traçabilité comptable, même logique que mouvements_stock)
+export const mouvementsCredit = pgTable("mouvements_credit", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  livreurId: uuid("livreur_id").references(() => livreurs.id),
+  ramasseurId: uuid("ramasseur_id").references(() => ramasseurs.id),
+  typeMouvement: typeMouvementCreditEnum("type_mouvement").notNull(),
+  quantite: integer("quantite").notNull(), // positif = crédit, négatif = débit
+  soldeApres: integer("solde_apres").notNull(),
+  reference: varchar("reference", { length: 100 }), // id commande, id demande de crédit...
+  notes: text("notes"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

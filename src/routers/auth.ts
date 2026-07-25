@@ -6,7 +6,9 @@ import { eq } from "drizzle-orm";
 import { router, publicProcedure } from "../trpc.js";
 import { db, schema } from "../db/index.js";
 
-const { utilisateurs, ramasseurs, boutiquesGaz, livreurs } = schema;
+const { utilisateurs, ramasseurs, boutiquesGaz, livreurs, mouvementsCredit } = schema;
+
+const CREDITS_BIENVENUE = 5; // offerts à la création d'un compte livreur/ramasseur
 
 function genererToken(user: { id: string; role: string; telephone: string }) {
   const payload: { id: string; role: string; telephone: string } = {
@@ -101,19 +103,31 @@ export const authRouter = router({
         })
         .returning();
 
-      await db.insert(ramasseurs).values({
-        utilisateurId: user.id,
-        type: input.type,
-        nomSociete: input.nomSociete,
-        zonesCouvertes: input.zonesCouvertes,
-        vehicule: input.vehicule,
-        pays: input.pays,
-        ville: input.ville,
-        commune: input.commune,
-        quartier: input.quartier,
-        latitude: input.latitude,
-        longitude: input.longitude,
-        statutValidation: "en_attente", // validé manuellement par l'admin
+      const [ramasseurCree] = await db
+        .insert(ramasseurs)
+        .values({
+          utilisateurId: user.id,
+          type: input.type,
+          nomSociete: input.nomSociete,
+          zonesCouvertes: input.zonesCouvertes,
+          vehicule: input.vehicule,
+          pays: input.pays,
+          ville: input.ville,
+          commune: input.commune,
+          quartier: input.quartier,
+          latitude: input.latitude,
+          longitude: input.longitude,
+          statutValidation: "en_attente", // validé manuellement par l'admin
+          credits: CREDITS_BIENVENUE,
+        })
+        .returning();
+
+      await db.insert(mouvementsCredit).values({
+        ramasseurId: ramasseurCree.id,
+        typeMouvement: "ajustement",
+        quantite: CREDITS_BIENVENUE,
+        soldeApres: CREDITS_BIENVENUE,
+        notes: "Crédits de bienvenue offerts à la création du compte",
       });
 
       return {
@@ -165,17 +179,29 @@ export const authRouter = router({
         })
         .returning();
 
-      await db.insert(livreurs).values({
-        utilisateurId: user.id,
-        vehicule: input.vehicule,
-        zonesCouvertes: input.zonesCouvertes,
-        pays: input.pays,
-        ville: input.ville,
-        commune: input.commune,
-        quartier: input.quartier,
-        latitude: input.latitude,
-        longitude: input.longitude,
-        statutValidation: "en_attente", // validé manuellement par l'admin
+      const [livreurCree] = await db
+        .insert(livreurs)
+        .values({
+          utilisateurId: user.id,
+          vehicule: input.vehicule,
+          zonesCouvertes: input.zonesCouvertes,
+          pays: input.pays,
+          ville: input.ville,
+          commune: input.commune,
+          quartier: input.quartier,
+          latitude: input.latitude,
+          longitude: input.longitude,
+          statutValidation: "en_attente", // validé manuellement par l'admin
+          credits: CREDITS_BIENVENUE,
+        })
+        .returning();
+
+      await db.insert(mouvementsCredit).values({
+        livreurId: livreurCree.id,
+        typeMouvement: "ajustement",
+        quantite: CREDITS_BIENVENUE,
+        soldeApres: CREDITS_BIENVENUE,
+        notes: "Crédits de bienvenue offerts à la création du compte",
       });
 
       return {
