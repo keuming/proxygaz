@@ -209,6 +209,11 @@ export const livreurs = pgTable("livreurs", {
   quartier: varchar("quartier", { length: 100 }),
   latitude: doublePrecision("latitude"),
   longitude: doublePrecision("longitude"),
+  // Position GPS en direct, distincte de l'adresse d'inscription ci-dessus — mise à jour en
+  // continu pendant que le livreur est actif, pour prioriser les courses les plus proches.
+  positionActuelleLat: doublePrecision("position_actuelle_lat"),
+  positionActuelleLng: doublePrecision("position_actuelle_lng"),
+  positionMajAt: timestamp("position_maj_at"),
   statutValidation: statutValidationEnum("statut_validation").default("en_attente"),
   noteMoyenne: doublePrecision("note_moyenne").default(0),
   nombreLivraisons: integer("nombre_livraisons").notNull().default(0),
@@ -258,6 +263,9 @@ export const ramasseurs = pgTable("ramasseurs", {
   quartier: varchar("quartier", { length: 100 }),
   latitude: doublePrecision("latitude"),
   longitude: doublePrecision("longitude"),
+  positionActuelleLat: doublePrecision("position_actuelle_lat"),
+  positionActuelleLng: doublePrecision("position_actuelle_lng"),
+  positionMajAt: timestamp("position_maj_at"),
   statutValidation: statutValidationEnum("statut_validation").default("en_attente"),
   noteMoyenne: doublePrecision("note_moyenne").default(0),
   nombreRamassages: integer("nombre_ramassages").notNull().default(0),

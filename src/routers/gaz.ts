@@ -452,21 +452,68 @@ export const gazRouter = router({
         boutiqueVille: boutiquesGaz.ville,
         boutiqueCommune: boutiquesGaz.commune,
         boutiqueAdresse: boutiquesGaz.adresse,
+        boutiqueLat: boutiquesGaz.latitude,
+        boutiqueLng: boutiquesGaz.longitude,
       })
       .from(commandesGaz)
       .innerJoin(boutiquesGaz, eq(commandesGaz.boutiqueId, boutiquesGaz.id))
       .where(eq(commandesGaz.statut, "confirmee"));
 
-    return rows
+    // Position à utiliser pour le calcul de proximité : la position GPS en direct si connue
+    // (mise à jour en continu pendant que le livreur est actif), sinon sa position d'inscription.
+    const latRef = profilLivreur.positionActuelleLat ?? profilLivreur.latitude;
+    const lngRef = profilLivreur.positionActuelleLng ?? profilLivreur.longitude;
+
+    const resultats = rows
       .filter((r) => zones.includes(r.boutiqueCommune ?? "") || zones.includes(r.boutiqueVille))
-      .map((r) => ({
-        ...r.commande,
-        boutiqueNom: r.boutiqueNom,
-        boutiqueVille: r.boutiqueVille,
-        boutiqueCommune: r.boutiqueCommune,
-        boutiqueAdresse: r.boutiqueAdresse,
-      }));
+      .map((r) => {
+        const distance =
+          latRef != null && lngRef != null && r.boutiqueLat != null && r.boutiqueLng != null
+            ? distanceKm(latRef, lngRef, r.boutiqueLat, r.boutiqueLng)
+            : null;
+        return {
+          ...r.commande,
+          boutiqueNom: r.boutiqueNom,
+          boutiqueVille: r.boutiqueVille,
+          boutiqueCommune: r.boutiqueCommune,
+          boutiqueAdresse: r.boutiqueAdresse,
+          distanceKm: distance !== null ? Math.round(distance * 10) / 10 : null,
+        };
+      });
+
+    // Les plus proches en premier ; celles sans position connue passent en dernier
+    resultats.sort((a, b) => {
+      if (a.distanceKm === null && b.distanceKm === null) return 0;
+      if (a.distanceKm === null) return 1;
+      if (b.distanceKm === null) return -1;
+      return a.distanceKm - b.distanceKm;
+    });
+
+    return resultats;
   }),
+
+  // Le livreur transmet sa position GPS en direct pendant qu'il est actif, pour que les
+  // courses disponibles lui soient présentées triées par proximité réelle.
+  majPositionLivreur: requireRole("livreur")
+    .input(z.object({ latitude: z.number(), longitude: z.number() }))
+    .mutation(async ({ ctx, input }) => {
+      const [profilLivreur] = await db
+        .select()
+        .from(livreurs)
+        .where(eq(livreurs.utilisateurId, ctx.user.id));
+      if (!profilLivreur) throw new TRPCError({ code: "NOT_FOUND", message: "Profil livreur introuvable" });
+
+      await db
+        .update(livreurs)
+        .set({
+          positionActuelleLat: input.latitude,
+          positionActuelleLng: input.longitude,
+          positionMajAt: new Date(),
+        })
+        .where(eq(livreurs.id, profilLivreur.id));
+
+      return { ok: true };
+    }),
 
   /**
    * ACCEPTATION D'UNE LIVRAISON - "premier qui accepte, gagne"

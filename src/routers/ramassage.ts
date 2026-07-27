@@ -7,6 +7,21 @@ import { db, schema } from "../db/index.js";
 
 const { demandesRamassage, ramasseurs, notifications, mouvementsCredit, demandesCredit } = schema;
 
+/**
+ * Distance à vol d'oiseau entre deux points GPS (formule de Haversine), en kilomètres.
+ * Identique à celle de gaz.ts — pas de module partagé pour rester simple, les deux
+ * routers sont indépendants.
+ */
+function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 export const ramassageRouter = router({
   // Le client crée une demande de ramassage — fonctionne connecté OU en tant qu'invité,
   // même logique que gaz.creerCommande : compte créé/réutilisé silencieusement si besoin.
@@ -125,11 +140,51 @@ export const ramassageRouter = router({
       .from(demandesRamassage)
       .where(eq(demandesRamassage.statut, "en_attente"));
 
+    const latRef = profilRamasseur.positionActuelleLat ?? profilRamasseur.latitude;
+    const lngRef = profilRamasseur.positionActuelleLng ?? profilRamasseur.longitude;
+
     // Filtre applicatif par zone (commune/ville incluse dans zonesCouvertes)
-    return demandes.filter(
-      (d) => zones.includes(d.commune ?? "") || zones.includes(d.ville)
-    );
+    const resultats = demandes
+      .filter((d) => zones.includes(d.commune ?? "") || zones.includes(d.ville))
+      .map((d) => {
+        const distance =
+          latRef != null && lngRef != null && d.latitude != null && d.longitude != null
+            ? distanceKm(latRef, lngRef, d.latitude, d.longitude)
+            : null;
+        return { ...d, distanceKm: distance !== null ? Math.round(distance * 10) / 10 : null };
+      });
+
+    resultats.sort((a, b) => {
+      if (a.distanceKm === null && b.distanceKm === null) return 0;
+      if (a.distanceKm === null) return 1;
+      if (b.distanceKm === null) return -1;
+      return a.distanceKm - b.distanceKm;
+    });
+
+    return resultats;
   }),
+
+  // Le ramasseur transmet sa position GPS en direct pendant qu'il est actif.
+  majPositionRamasseur: requireRole("ramasseur")
+    .input(z.object({ latitude: z.number(), longitude: z.number() }))
+    .mutation(async ({ ctx, input }) => {
+      const [profilRamasseur] = await db
+        .select()
+        .from(ramasseurs)
+        .where(eq(ramasseurs.utilisateurId, ctx.user.id));
+      if (!profilRamasseur) throw new TRPCError({ code: "NOT_FOUND", message: "Profil ramasseur introuvable" });
+
+      await db
+        .update(ramasseurs)
+        .set({
+          positionActuelleLat: input.latitude,
+          positionActuelleLng: input.longitude,
+          positionMajAt: new Date(),
+        })
+        .where(eq(ramasseurs.id, profilRamasseur.id));
+
+      return { ok: true };
+    }),
 
   /**
    * VALIDATION D'UNE DEMANDE - "premier qui valide, gagne"
