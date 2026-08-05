@@ -164,6 +164,66 @@ export const adminRouter = router({
       return boutique;
     }),
 
+  // Delete : désactivation (jamais de suppression définitive — l'historique des commandes
+  // et du stock doit rester intact). Manquait jusqu'ici : le sélecteur de statut du
+  // dashboard admin appelait cette route sans qu'elle existe.
+  changerStatutBoutique: adminProcedure
+    .input(
+      z.object({
+        boutiqueId: z.string().uuid(),
+        statut: z.enum(["en_attente", "valide", "rejete", "suspendu"]),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const [boutique] = await db
+        .update(boutiquesGaz)
+        .set({ statutValidation: input.statut })
+        .where(eq(boutiquesGaz.id, input.boutiqueId))
+        .returning();
+
+      if (!boutique) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable" });
+      }
+      return boutique;
+    }),
+
+  // Update : modification des informations d'une boutique existante, y compris son
+  // rattachement à une société de livraison. societeLivraisonId accepte explicitement
+  // `null` pour détacher une boutique de sa société (elle redevient indépendante et cesse
+  // de puiser dans le pot commun) — un `undefined` ne touche pas au rattachement actuel.
+  // Manquait jusqu'ici : le formulaire "Modifier" du dashboard admin appelait cette route
+  // sans qu'elle existe, ce qui la rendait silencieusement inopérante.
+  modifierBoutique: adminProcedure
+    .input(
+      z.object({
+        boutiqueId: z.string().uuid(),
+        nomBoutique: z.string().min(2).optional(),
+        pays: z.string().min(2).optional(),
+        ville: z.string().min(2).optional(),
+        commune: z.string().optional(),
+        quartier: z.string().optional(),
+        adresse: z.string().optional(),
+        latitude: z.number().optional(),
+        longitude: z.number().optional(),
+        rayonLivraisonKm: z.number().positive().optional(),
+        societeLivraisonId: z.string().uuid().nullable().optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const { boutiqueId, ...champs } = input;
+
+      const [boutique] = await db
+        .update(boutiquesGaz)
+        .set(champs)
+        .where(eq(boutiquesGaz.id, boutiqueId))
+        .returning();
+
+      if (!boutique) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable" });
+      }
+      return boutique;
+    }),
+
   // ---- Ramasseurs ----
   listRamasseurs: adminProcedure.query(async () => {
     const rows = await db
