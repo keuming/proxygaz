@@ -273,8 +273,34 @@ export const gazRouter = router({
         throw new TRPCError({ code: "NOT_FOUND", message: "Marque de gaz introuvable" });
       }
 
+      // Débit du pot commun de la société de livraison à laquelle appartient la boutique
+      // assignée (frais de service ProxiGaz, même logique que pour les livreurs). Débit
+      // atomique conditionné sur credits > 0, sans effet pour une boutique indépendante
+      // (societeLivraisonId nul), qui continue de fonctionner gratuitement comme aujourd'hui.
+      const debit: { info: { societeLivraisonId: string; soldeApres: number } | null } = { info: null };
+      async function essayerAssignerBoutique(id: string): Promise<boolean> {
+        const [boutique] = await db
+          .select({ societeLivraisonId: boutiquesGaz.societeLivraisonId })
+          .from(boutiquesGaz)
+          .where(eq(boutiquesGaz.id, id));
+
+        if (!boutique?.societeLivraisonId) return true; // boutique indépendante : rien à débiter
+
+        const [debitee] = await db
+          .update(societesLivraison)
+          .set({ credits: sql`${societesLivraison.credits} - 1` })
+          .where(and(eq(societesLivraison.id, boutique.societeLivraisonId), gt(societesLivraison.credits, 0)))
+          .returning();
+
+        if (!debitee) return false; // pot commun épuisé
+        debit.info = { societeLivraisonId: boutique.societeLivraisonId, soldeApres: debitee.credits };
+        return true;
+      }
+
       // Assignation automatique à la boutique la plus proche disposant du stock (si coordonnées
       // fournies), sinon à la première trouvée, si aucune boutique n'a été précisée explicitement.
+      // En mode auto, une boutique dont le pot commun de société est épuisé est ignorée au
+      // profit de la suivante ; en sélection explicite, le pot épuisé bloque la commande.
       let boutiqueId = input.boutiqueId;
       if (!boutiqueId) {
         const candidates = await db
@@ -300,19 +326,38 @@ export const gazRouter = router({
           });
         }
 
-        if (input.latitude != null && input.longitude != null) {
-          const avecDistance = candidates
-            .map((c) => ({
-              id: c.id,
-              distance:
-                c.latitude != null && c.longitude != null
-                  ? distanceKm(input.latitude!, input.longitude!, c.latitude, c.longitude)
-                  : Infinity,
-            }))
-            .sort((a, b) => a.distance - b.distance);
-          boutiqueId = avecDistance[0].id;
-        } else {
-          boutiqueId = candidates[0].id;
+        const ordonnees =
+          input.latitude != null && input.longitude != null
+            ? candidates
+                .map((c) => ({
+                  id: c.id,
+                  distance:
+                    c.latitude != null && c.longitude != null
+                      ? distanceKm(input.latitude!, input.longitude!, c.latitude, c.longitude)
+                      : Infinity,
+                }))
+                .sort((a, b) => a.distance - b.distance)
+            : candidates;
+
+        for (const c of ordonnees) {
+          if (await essayerAssignerBoutique(c.id)) {
+            boutiqueId = c.id;
+            break;
+          }
+        }
+
+        if (!boutiqueId) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Aucune boutique disponible actuellement (crédit épuisé chez les boutiques en stock)",
+          });
+        }
+      } else {
+        if (!(await essayerAssignerBoutique(boutiqueId))) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Cette boutique appartient à une société dont le crédit du pot commun est épuisé",
+          });
         }
       }
 
@@ -342,6 +387,18 @@ export const gazRouter = router({
           statut: "en_attente",
         })
         .returning();
+
+      if (debit.info) {
+        await db.insert(mouvementsCredit).values({
+          boutiqueId,
+          societeLivraisonId: debit.info.societeLivraisonId,
+          typeMouvement: "debit_livraison",
+          quantite: -1,
+          soldeApres: debit.info.soldeApres,
+          reference: commande.id,
+          notes: "Frais de service ProxiGaz (100 FCFA) — commande assignée à une boutique de la société",
+        });
+      }
 
       return { commande, token: tokenGenere, user: userGenere };
     }),
@@ -1475,6 +1532,93 @@ export const gazRouter = router({
       return { utilisateur: { id: user.id, nom: user.nom }, livreur: livreurCree };
     }),
 
+  // Liste des boutiques rattachées à cette société (utilisée aussi côté admin pour le
+  // regroupement par société dans la liste générale des boutiques).
+  mesBoutiquesSociete: requireRole("societe_livraison").query(async ({ ctx }) => {
+    const [societe] = await db
+      .select()
+      .from(societesLivraison)
+      .where(eq(societesLivraison.utilisateurId, ctx.user.id));
+    if (!societe) throw new TRPCError({ code: "NOT_FOUND", message: "Profil société introuvable" });
+
+    return db
+      .select()
+      .from(boutiquesGaz)
+      .where(eq(boutiquesGaz.societeLivraisonId, societe.id))
+      .orderBy(desc(boutiquesGaz.createdAt));
+  }),
+
+  // La société ajoute une boutique sous son propre compte. La boutique créée garde son
+  // propre accès (téléphone + PIN) pour gérer son stock au quotidien, mais les frais de
+  // service ProxiGaz sur les commandes qui lui sont assignées sont prélevés sur le pot
+  // commun de la société — exactement comme pour un livreur rattaché.
+  ajouterBoutiqueSousSociete: requireRole("societe_livraison")
+    .input(
+      z.object({
+        nomBoutique: z.string().min(2),
+        telephone: z.string().min(8),
+        codePin: z.string().regex(/^\d{4}$/, "Le code PIN doit comporter exactement 4 chiffres"),
+        adresse: z.string().optional(),
+        latitude: z.number().optional(),
+        longitude: z.number().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [societe] = await db
+        .select()
+        .from(societesLivraison)
+        .where(eq(societesLivraison.utilisateurId, ctx.user.id));
+      if (!societe) throw new TRPCError({ code: "NOT_FOUND", message: "Profil société introuvable" });
+
+      if (societe.statutValidation !== "valide") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Votre société doit être validée par ProxiGaz avant de pouvoir ajouter des boutiques",
+        });
+      }
+
+      const existant = await db
+        .select()
+        .from(utilisateurs)
+        .where(eq(utilisateurs.telephone, input.telephone));
+      if (existant.length > 0) {
+        throw new TRPCError({ code: "CONFLICT", message: "Ce numéro est déjà utilisé" });
+      }
+
+      const motDePasseHash = await bcrypt.hash(input.codePin, 10);
+
+      const [user] = await db
+        .insert(utilisateurs)
+        .values({
+          nom: input.nomBoutique,
+          telephone: input.telephone,
+          motDePasseHash,
+          ville: societe.ville,
+          commune: societe.commune,
+          role: "boutique",
+        })
+        .returning();
+
+      const [boutiqueCreee] = await db
+        .insert(boutiquesGaz)
+        .values({
+          utilisateurId: user.id,
+          societeLivraisonId: societe.id,
+          nomBoutique: input.nomBoutique,
+          pays: societe.pays,
+          ville: societe.ville ?? "",
+          commune: societe.commune,
+          quartier: societe.quartier,
+          adresse: input.adresse,
+          latitude: input.latitude ?? societe.latitude,
+          longitude: input.longitude ?? societe.longitude,
+          statutValidation: "valide", // la société est déjà validée, ses boutiques le sont d'office
+        })
+        .returning();
+
+      return { utilisateur: { id: user.id, nom: user.nom }, boutique: boutiqueCreee };
+    }),
+
   monCreditSociete: requireRole("societe_livraison").query(async ({ ctx }) => {
     const [societe] = await db
       .select()
@@ -1552,8 +1696,14 @@ export const gazRouter = router({
       enCoursActuellement = rows[0]?.n ?? 0;
     }
 
+    const [{ nombreBoutiques }] = await db
+      .select({ nombreBoutiques: sql<number>`count(*)::int` })
+      .from(boutiquesGaz)
+      .where(eq(boutiquesGaz.societeLivraisonId, societe.id));
+
     return {
       nombreLivreurs: livreursSociete.length,
+      nombreBoutiques,
       totalLivraisons,
       enCoursActuellement,
     };

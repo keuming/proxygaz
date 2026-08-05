@@ -136,6 +136,11 @@ export const marquesGaz = pgTable("marques_gaz", {
 export const boutiquesGaz = pgTable("boutiques_gaz", {
   id: uuid("id").defaultRandom().primaryKey(),
   utilisateurId: uuid("utilisateur_id").references(() => utilisateurs.id),
+  // Rattachement optionnel à une société de livraison. Si renseigné, cette boutique puise
+  // dans le pot commun de la société (societesLivraison.credits) au lieu de fonctionner
+  // gratuitement comme une boutique indépendante : 1 crédit est débité du pot commun à
+  // chaque commande de gaz qui lui est automatiquement assignée.
+  societeLivraisonId: uuid("societe_livraison_id").references(() => societesLivraison.id),
   nomBoutique: varchar("nom_boutique", { length: 150 }).notNull(),
   pays: varchar("pays", { length: 100 }).notNull().default("Côte d'Ivoire"),
   ville: varchar("ville", { length: 100 }).notNull(),
@@ -323,6 +328,7 @@ export const mouvementsCredit = pgTable("mouvements_credit", {
   id: uuid("id").defaultRandom().primaryKey(),
   livreurId: uuid("livreur_id").references(() => livreurs.id),
   ramasseurId: uuid("ramasseur_id").references(() => ramasseurs.id),
+  boutiqueId: uuid("boutique_id").references(() => boutiquesGaz.id),
   societeLivraisonId: uuid("societe_livraison_id").references(() => societesLivraison.id),
   typeMouvement: typeMouvementCreditEnum("type_mouvement").notNull(),
   quantite: integer("quantite").notNull(), // positif = crédit, négatif = débit

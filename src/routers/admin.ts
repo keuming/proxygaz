@@ -134,12 +134,19 @@ export const adminRouter = router({
         boutique: boutiquesGaz,
         gerantNom: utilisateurs.nom,
         gerantTelephone: utilisateurs.telephone,
+        nomSociete: societesLivraison.nomSociete,
       })
       .from(boutiquesGaz)
       .innerJoin(utilisateurs, eq(boutiquesGaz.utilisateurId, utilisateurs.id))
+      .leftJoin(societesLivraison, eq(boutiquesGaz.societeLivraisonId, societesLivraison.id))
       .orderBy(desc(boutiquesGaz.createdAt));
 
-    return rows.map((r) => ({ ...r.boutique, gerantNom: r.gerantNom, gerantTelephone: r.gerantTelephone }));
+    return rows.map((r) => ({
+      ...r.boutique,
+      gerantNom: r.gerantNom,
+      gerantTelephone: r.gerantTelephone,
+      nomSociete: r.nomSociete,
+    }));
   }),
 
   validerBoutique: adminProcedure
@@ -449,19 +456,27 @@ export const adminRouter = router({
       .innerJoin(utilisateurs, eq(societesLivraison.utilisateurId, utilisateurs.id))
       .orderBy(desc(societesLivraison.createdAt));
 
-    // Nombre de livreurs rattachés à chaque société, pour affichage dans la liste admin
-    const compteurs = await db
+    // Nombre de livreurs et de boutiques rattachés à chaque société, pour affichage dans la liste admin
+    const compteursLivreurs = await db
       .select({ societeLivraisonId: livreurs.societeLivraisonId, n: sql<number>`count(*)::int` })
       .from(livreurs)
       .where(sql`${livreurs.societeLivraisonId} IS NOT NULL`)
       .groupBy(livreurs.societeLivraisonId);
-    const compteurParSociete = new Map(compteurs.map((c) => [c.societeLivraisonId, c.n]));
+    const compteurParSociete = new Map(compteursLivreurs.map((c) => [c.societeLivraisonId, c.n]));
+
+    const compteursBoutiques = await db
+      .select({ societeLivraisonId: boutiquesGaz.societeLivraisonId, n: sql<number>`count(*)::int` })
+      .from(boutiquesGaz)
+      .where(sql`${boutiquesGaz.societeLivraisonId} IS NOT NULL`)
+      .groupBy(boutiquesGaz.societeLivraisonId);
+    const compteurBoutiquesParSociete = new Map(compteursBoutiques.map((c) => [c.societeLivraisonId, c.n]));
 
     return rows.map((r) => ({
       ...r.societe,
       gerantNom: r.nom,
       gerantTelephone: r.telephone,
       nombreLivreurs: compteurParSociete.get(r.societe.id) ?? 0,
+      nombreBoutiques: compteurBoutiquesParSociete.get(r.societe.id) ?? 0,
     }));
   }),
 
@@ -621,6 +636,7 @@ export const adminRouter = router({
         adresse: z.string().optional(),
         latitude: z.number().optional(),
         longitude: z.number().optional(),
+        societeLivraisonId: z.string().uuid().optional(),
       })
     )
     .mutation(async ({ input }) => {
@@ -653,6 +669,7 @@ export const adminRouter = router({
         .insert(boutiquesGaz)
         .values({
           utilisateurId: user.id,
+          societeLivraisonId: input.societeLivraisonId,
           nomBoutique: input.nomBoutique,
           pays: input.pays,
           ville: input.ville,
