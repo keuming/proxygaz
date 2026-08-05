@@ -123,7 +123,17 @@ export const adminRouter = router({
 
   // ---- Boutiques ----
   listBoutiques: adminProcedure.query(async () => {
-    return db.select().from(boutiquesGaz).orderBy(desc(boutiquesGaz.createdAt));
+    const rows = await db
+      .select({
+        boutique: boutiquesGaz,
+        gerantNom: utilisateurs.nom,
+        gerantTelephone: utilisateurs.telephone,
+      })
+      .from(boutiquesGaz)
+      .innerJoin(utilisateurs, eq(boutiquesGaz.utilisateurId, utilisateurs.id))
+      .orderBy(desc(boutiquesGaz.createdAt));
+
+    return rows.map((r) => ({ ...r.boutique, gerantNom: r.gerantNom, gerantTelephone: r.gerantTelephone }));
   }),
 
   validerBoutique: adminProcedure
@@ -269,6 +279,58 @@ export const adminRouter = router({
       const [livreur] = await db
         .update(livreurs)
         .set({ statutValidation: input.approuver ? "valide" : "rejete" })
+        .where(eq(livreurs.id, input.livreurId))
+        .returning();
+
+      if (!livreur) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Livreur introuvable" });
+      }
+      return livreur;
+    }),
+
+  // Update : modification des informations d'un livreur existant
+  modifierLivreur: adminProcedure
+    .input(
+      z.object({
+        livreurId: z.string().uuid(),
+        vehicule: z.string().optional(),
+        zonesCouvertes: z.array(z.string()).optional(),
+        pays: z.string().min(2).optional(),
+        ville: z.string().min(2).optional(),
+        commune: z.string().optional(),
+        quartier: z.string().optional(),
+        latitude: z.number().optional(),
+        longitude: z.number().optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const { livreurId, ...champs } = input;
+
+      const [livreur] = await db
+        .update(livreurs)
+        .set(champs)
+        .where(eq(livreurs.id, livreurId))
+        .returning();
+
+      if (!livreur) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Livreur introuvable" });
+      }
+      return livreur;
+    }),
+
+  // Delete : désactivation (même logique que boutiques/ramasseurs — jamais de suppression
+  // définitive, l'historique des livraisons et des crédits doit rester intact).
+  changerStatutLivreur: adminProcedure
+    .input(
+      z.object({
+        livreurId: z.string().uuid(),
+        statut: z.enum(["en_attente", "valide", "rejete", "suspendu"]),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const [livreur] = await db
+        .update(livreurs)
+        .set({ statutValidation: input.statut })
         .where(eq(livreurs.id, input.livreurId))
         .returning();
 
