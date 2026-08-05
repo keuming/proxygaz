@@ -809,6 +809,20 @@ export const gazRouter = router({
       return rows.map((r) => ({ ...r.commande, clientNom: r.clientNom, clientTelephone: r.clientTelephone }));
     }),
 
+  // Profil de la boutique du gérant connecté — utilisé notamment pour personnaliser
+  // l'en-tête du dashboard avec le vrai nom de la boutique plutôt qu'un libellé générique.
+  monProfilBoutique: requireRole("boutique").query(async ({ ctx }) => {
+    const [boutique] = await db
+      .select()
+      .from(boutiquesGaz)
+      .where(eq(boutiquesGaz.utilisateurId, ctx.user.id));
+
+    if (!boutique) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "Profil boutique introuvable" });
+    }
+    return boutique;
+  }),
+
   monStock: requireRole("boutique").query(async ({ ctx }) => {
     const [boutique] = await db
       .select()
