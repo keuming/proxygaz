@@ -4,7 +4,7 @@ import jwt from "jsonwebtoken";
 
 export interface AuthUser {
   id: string;
-  role: "client" | "boutique" | "livreur" | "ramasseur" | "admin";
+  role: "client" | "boutique" | "livreur" | "ramasseur" | "societe_livraison" | "admin";
   telephone: string;
 }
 

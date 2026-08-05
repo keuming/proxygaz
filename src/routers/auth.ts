@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import { router, publicProcedure } from "../trpc.js";
 import { db, schema } from "../db/index.js";
 
-const { utilisateurs, ramasseurs, boutiquesGaz, livreurs, mouvementsCredit } = schema;
+const { utilisateurs, ramasseurs, boutiquesGaz, livreurs, societesLivraison, mouvementsCredit } = schema;
 
 const CREDITS_BIENVENUE = 5; // offerts à la création d'un compte livreur/ramasseur
 
@@ -198,6 +198,81 @@ export const authRouter = router({
 
       await db.insert(mouvementsCredit).values({
         livreurId: livreurCree.id,
+        typeMouvement: "ajustement",
+        quantite: CREDITS_BIENVENUE,
+        soldeApres: CREDITS_BIENVENUE,
+        notes: "Crédits de bienvenue offerts à la création du compte",
+      });
+
+      return {
+        token: genererToken(user),
+        user: { id: user.id, nom: user.nom, role: user.role },
+        message: "Inscription reçue, en attente de validation par l'équipe ProxiGaz",
+      };
+    }),
+
+  // Une société de livraison s'inscrit elle-même. Elle n'a pas de zone de livraison propre
+  // ni de véhicule (ce sont ses livreurs individuels, ajoutés ensuite depuis son dashboard,
+  // qui portent ces informations). Reçoit 5 crédits de bienvenue dans son pot commun.
+  inscriptionSocieteLivraison: publicProcedure
+    .input(
+      z.object({
+        nom: z.string().min(2),
+        telephone: z.string().min(8),
+        codePin: z.string().regex(/^\d{4}$/, "Le code PIN doit comporter exactement 4 chiffres"),
+        nomSociete: z.string().min(2),
+        pays: z.string().min(2).default("Côte d'Ivoire"),
+        ville: z.string().min(2),
+        commune: z.string().optional(),
+        quartier: z.string().optional(),
+        latitude: z.number().optional(),
+        longitude: z.number().optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const existant = await db
+        .select()
+        .from(utilisateurs)
+        .where(eq(utilisateurs.telephone, input.telephone));
+
+      if (existant.length > 0) {
+        throw new TRPCError({ code: "CONFLICT", message: "Ce numéro est déjà utilisé" });
+      }
+
+      const motDePasseHash = await bcrypt.hash(input.codePin, 10);
+
+      const [user] = await db
+        .insert(utilisateurs)
+        .values({
+          nom: input.nom,
+          telephone: input.telephone,
+          motDePasseHash,
+          ville: input.ville,
+          commune: input.commune,
+          latitude: input.latitude,
+          longitude: input.longitude,
+          role: "societe_livraison",
+        })
+        .returning();
+
+      const [societeCreee] = await db
+        .insert(societesLivraison)
+        .values({
+          utilisateurId: user.id,
+          nomSociete: input.nomSociete,
+          pays: input.pays,
+          ville: input.ville,
+          commune: input.commune,
+          quartier: input.quartier,
+          latitude: input.latitude,
+          longitude: input.longitude,
+          statutValidation: "en_attente", // validée manuellement par l'admin
+          credits: CREDITS_BIENVENUE,
+        })
+        .returning();
+
+      await db.insert(mouvementsCredit).values({
+        societeLivraisonId: societeCreee.id,
         typeMouvement: "ajustement",
         quantite: CREDITS_BIENVENUE,
         soldeApres: CREDITS_BIENVENUE,

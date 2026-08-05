@@ -71,6 +71,13 @@
       "when": 1785145772310,
       "tag": "0009_lively_tinkerer",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1785924434529,
+      "tag": "0010_open_chameleon",
+      "breakpoints": true
     }
   ]
 }

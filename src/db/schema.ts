@@ -22,6 +22,7 @@ export const roleEnum = pgEnum("role", [
   "boutique",
   "livreur",
   "ramasseur",
+  "societe_livraison",
   "admin",
 ]);
 
@@ -197,10 +198,33 @@ export const mouvementsStock = pgTable("mouvements_stock", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+// Société de livraison — regroupe plusieurs livreurs sous un même compte entreprise.
+// Le crédit est un pot commun partagé par tous les livreurs de la société (contrairement
+// aux livreurs indépendants, qui gardent chacun leur propre solde individuel).
+export const societesLivraison = pgTable("societes_livraison", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  utilisateurId: uuid("utilisateur_id").references(() => utilisateurs.id).notNull(),
+  nomSociete: varchar("nom_societe", { length: 150 }).notNull(),
+  pays: varchar("pays", { length: 100 }).notNull().default("Côte d'Ivoire"),
+  ville: varchar("ville", { length: 100 }),
+  commune: varchar("commune", { length: 100 }),
+  quartier: varchar("quartier", { length: 100 }),
+  latitude: doublePrecision("latitude"),
+  longitude: doublePrecision("longitude"),
+  statutValidation: statutValidationEnum("statut_validation").default("en_attente"),
+  noteMoyenne: doublePrecision("note_moyenne").default(0),
+  credits: integer("credits").notNull().default(0), // pot commun : 1 crédit = 100 FCFA
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 // Livreurs de bouteilles de gaz (distincts des ramasseurs d'ordures)
 export const livreurs = pgTable("livreurs", {
   id: uuid("id").defaultRandom().primaryKey(),
   utilisateurId: uuid("utilisateur_id").references(() => utilisateurs.id).notNull(),
+  // Rattachement optionnel à une société de livraison. Si renseigné, le crédit de CE
+  // livreur n'est plus utilisé : les livraisons acceptées débitent le pot commun de la
+  // société (societesLivraison.credits) à la place de livreurs.credits.
+  societeLivraisonId: uuid("societe_livraison_id").references(() => societesLivraison.id),
   vehicule: varchar("vehicule", { length: 60 }), // "moto", "tricycle", "camionnette"
   zonesCouvertes: jsonb("zones_couvertes").notNull().default([]), // ["Cocody", "Marcory", ...]
   pays: varchar("pays", { length: 100 }).notNull().default("Côte d'Ivoire"),
@@ -217,6 +241,7 @@ export const livreurs = pgTable("livreurs", {
   statutValidation: statutValidationEnum("statut_validation").default("en_attente"),
   noteMoyenne: doublePrecision("note_moyenne").default(0),
   nombreLivraisons: integer("nombre_livraisons").notNull().default(0),
+  // Solde individuel — utilisé uniquement pour les livreurs SANS société (indépendants).
   credits: integer("credits").notNull().default(0), // 1 crédit = 100 FCFA, débité à chaque livraison acceptée
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
@@ -283,6 +308,7 @@ export const demandesCredit = pgTable("demandes_credit", {
   id: uuid("id").defaultRandom().primaryKey(),
   livreurId: uuid("livreur_id").references(() => livreurs.id),
   ramasseurId: uuid("ramasseur_id").references(() => ramasseurs.id),
+  societeLivraisonId: uuid("societe_livraison_id").references(() => societesLivraison.id),
   quantiteCredits: integer("quantite_credits").notNull(),
   montantPaye: decimal("montant_paye", { precision: 10, scale: 2 }).notNull(), // quantiteCredits * 100
   modePaiement: modePaiementEnum("mode_paiement").notNull().default("mobile_money"),
@@ -297,6 +323,7 @@ export const mouvementsCredit = pgTable("mouvements_credit", {
   id: uuid("id").defaultRandom().primaryKey(),
   livreurId: uuid("livreur_id").references(() => livreurs.id),
   ramasseurId: uuid("ramasseur_id").references(() => ramasseurs.id),
+  societeLivraisonId: uuid("societe_livraison_id").references(() => societesLivraison.id),
   typeMouvement: typeMouvementCreditEnum("type_mouvement").notNull(),
   quantite: integer("quantite").notNull(), // positif = crédit, négatif = débit
   soldeApres: integer("solde_apres").notNull(),

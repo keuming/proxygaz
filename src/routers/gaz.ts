@@ -2,6 +2,7 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { and, eq, gt, desc, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
+import bcrypt from "bcryptjs";
 import { router, publicProcedure, protectedProcedure, requireRole } from "../trpc.js";
 import { db, schema } from "../db/index.js";
 
@@ -11,6 +12,8 @@ const {
   boutiquesGaz,
   stockBoutique,
   livreurs,
+  societesLivraison,
+  utilisateurs,
   notifications,
   fournisseurs,
   approvisionnements,
@@ -532,20 +535,41 @@ export const gazRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: "Profil livreur non validé" });
       }
 
-      // Frais de service ProxiGaz : 1 crédit (100 FCFA) réservé avant d'accepter la course.
-      // Débit atomique conditionné sur credits > 0, pour éviter tout passage en négatif
-      // en cas d'acceptations concurrentes.
-      const [livreurDebite] = await db
-        .update(livreurs)
-        .set({ credits: sql`${livreurs.credits} - 1` })
-        .where(and(eq(livreurs.id, profilLivreur.id), gt(livreurs.credits, 0)))
-        .returning();
+      const appartientAUneSociete = !!profilLivreur.societeLivraisonId;
 
-      if (!livreurDebite) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "Crédit insuffisant. Achetez des crédits pour accepter des courses.",
-        });
+      // Frais de service ProxiGaz : 1 crédit (100 FCFA) réservé avant d'accepter la course.
+      // Débit atomique conditionné sur credits > 0, pour éviter tout passage en négatif en
+      // cas d'acceptations concurrentes. Si le livreur appartient à une société de livraison,
+      // c'est le pot commun de la société qui est débité, pas son solde individuel.
+      let soldeApresDebit: number;
+      if (appartientAUneSociete) {
+        const [societeDebitee] = await db
+          .update(societesLivraison)
+          .set({ credits: sql`${societesLivraison.credits} - 1` })
+          .where(and(eq(societesLivraison.id, profilLivreur.societeLivraisonId!), gt(societesLivraison.credits, 0)))
+          .returning();
+
+        if (!societeDebitee) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Crédit de votre société épuisé. Contactez votre société pour recharger le pot commun.",
+          });
+        }
+        soldeApresDebit = societeDebitee.credits;
+      } else {
+        const [livreurDebite] = await db
+          .update(livreurs)
+          .set({ credits: sql`${livreurs.credits} - 1` })
+          .where(and(eq(livreurs.id, profilLivreur.id), gt(livreurs.credits, 0)))
+          .returning();
+
+        if (!livreurDebite) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Crédit insuffisant. Achetez des crédits pour accepter des courses.",
+          });
+        }
+        soldeApresDebit = livreurDebite.credits;
       }
 
       const [utilisateurLivreur] = await db
@@ -565,21 +589,39 @@ export const gazRouter = router({
         .returning();
 
       if (!commande) {
-        // La course a été prise entretemps par un autre livreur : on rembourse le crédit réservé.
-        const [rembourse] = await db
-          .update(livreurs)
-          .set({ credits: sql`${livreurs.credits} + 1` })
-          .where(eq(livreurs.id, profilLivreur.id))
-          .returning();
+        // La course a été prise entretemps par un autre livreur : on rembourse le crédit réservé,
+        // à la société si c'était son pot commun, sinon au livreur lui-même.
+        if (appartientAUneSociete) {
+          const [rembourse] = await db
+            .update(societesLivraison)
+            .set({ credits: sql`${societesLivraison.credits} + 1` })
+            .where(eq(societesLivraison.id, profilLivreur.societeLivraisonId!))
+            .returning();
 
-        await db.insert(mouvementsCredit).values({
-          livreurId: profilLivreur.id,
-          typeMouvement: "ajustement",
-          quantite: 1,
-          soldeApres: rembourse.credits,
-          reference: input.commandeId,
-          notes: "Remboursement : course déjà prise par un autre livreur",
-        });
+          await db.insert(mouvementsCredit).values({
+            societeLivraisonId: profilLivreur.societeLivraisonId!,
+            typeMouvement: "ajustement",
+            quantite: 1,
+            soldeApres: rembourse.credits,
+            reference: input.commandeId,
+            notes: `Remboursement : course déjà prise par un autre livreur (${utilisateurLivreur?.nom})`,
+          });
+        } else {
+          const [rembourse] = await db
+            .update(livreurs)
+            .set({ credits: sql`${livreurs.credits} + 1` })
+            .where(eq(livreurs.id, profilLivreur.id))
+            .returning();
+
+          await db.insert(mouvementsCredit).values({
+            livreurId: profilLivreur.id,
+            typeMouvement: "ajustement",
+            quantite: 1,
+            soldeApres: rembourse.credits,
+            reference: input.commandeId,
+            notes: "Remboursement : course déjà prise par un autre livreur",
+          });
+        }
 
         throw new TRPCError({
           code: "CONFLICT",
@@ -588,12 +630,15 @@ export const gazRouter = router({
       }
 
       await db.insert(mouvementsCredit).values({
-        livreurId: profilLivreur.id,
+        livreurId: appartientAUneSociete ? undefined : profilLivreur.id,
+        societeLivraisonId: appartientAUneSociete ? profilLivreur.societeLivraisonId! : undefined,
         typeMouvement: "debit_livraison",
         quantite: -1,
-        soldeApres: livreurDebite.credits,
+        soldeApres: soldeApresDebit,
         reference: commande.id,
-        notes: "Frais de service ProxiGaz (100 FCFA)",
+        notes: appartientAUneSociete
+          ? `Frais de service ProxiGaz (100 FCFA) — livreur ${utilisateurLivreur?.nom}`
+          : "Frais de service ProxiGaz (100 FCFA)",
       });
 
       await db.insert(notifications).values({
@@ -1248,7 +1293,16 @@ export const gazRouter = router({
       .from(livreurs)
       .where(eq(livreurs.utilisateurId, ctx.user.id));
     if (!profilLivreur) throw new TRPCError({ code: "NOT_FOUND", message: "Profil livreur introuvable" });
-    return { credits: profilLivreur.credits };
+
+    if (profilLivreur.societeLivraisonId) {
+      const [societe] = await db
+        .select({ credits: societesLivraison.credits, nomSociete: societesLivraison.nomSociete })
+        .from(societesLivraison)
+        .where(eq(societesLivraison.id, profilLivreur.societeLivraisonId));
+      return { credits: societe?.credits ?? 0, pool: true, nomSociete: societe?.nomSociete ?? null };
+    }
+
+    return { credits: profilLivreur.credits, pool: false, nomSociete: null };
   }),
 
   mesMouvementsCreditLivreur: requireRole("livreur").query(async ({ ctx }) => {
@@ -1296,6 +1350,14 @@ export const gazRouter = router({
         .where(eq(livreurs.utilisateurId, ctx.user.id));
       if (!profilLivreur) throw new TRPCError({ code: "NOT_FOUND", message: "Profil livreur introuvable" });
 
+      if (profilLivreur.societeLivraisonId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message:
+            "Vous faites partie d'une société de livraison — c'est elle qui recharge le pot commun de crédits, pas vous individuellement.",
+        });
+      }
+
       const [demande] = await db
         .insert(demandesCredit)
         .values({
@@ -1310,4 +1372,190 @@ export const gazRouter = router({
 
       return demande;
     }),
+
+  // ============================================================
+  // SOCIÉTÉ DE LIVRAISON — dashboard de gestion de ses propres livreurs
+  // ============================================================
+
+  monProfilSociete: requireRole("societe_livraison").query(async ({ ctx }) => {
+    const [societe] = await db
+      .select()
+      .from(societesLivraison)
+      .where(eq(societesLivraison.utilisateurId, ctx.user.id));
+    if (!societe) throw new TRPCError({ code: "NOT_FOUND", message: "Profil société introuvable" });
+    return societe;
+  }),
+
+  // Liste des livreurs rattachés à cette société (utilisée aussi côté admin pour le
+  // regroupement par société dans la liste générale des livreurs).
+  mesLivreursSociete: requireRole("societe_livraison").query(async ({ ctx }) => {
+    const [societe] = await db
+      .select()
+      .from(societesLivraison)
+      .where(eq(societesLivraison.utilisateurId, ctx.user.id));
+    if (!societe) throw new TRPCError({ code: "NOT_FOUND", message: "Profil société introuvable" });
+
+    const rows = await db
+      .select({ livreur: livreurs, nom: utilisateurs.nom, telephone: utilisateurs.telephone })
+      .from(livreurs)
+      .innerJoin(utilisateurs, eq(livreurs.utilisateurId, utilisateurs.id))
+      .where(eq(livreurs.societeLivraisonId, societe.id))
+      .orderBy(desc(livreurs.createdAt));
+
+    return rows.map((r) => ({ ...r.livreur, nom: r.nom, telephone: r.telephone }));
+  }),
+
+  // La société ajoute un livreur sous son propre compte. Le livreur créé garde son propre
+  // accès (téléphone + PIN) pour accepter ses courses sur le terrain, mais son crédit est
+  // celui du pot commun de la société — son solde individuel reste à 0, inutilisé.
+  ajouterLivreurSousSociete: requireRole("societe_livraison")
+    .input(
+      z.object({
+        nom: z.string().min(2),
+        telephone: z.string().min(8),
+        codePin: z.string().regex(/^\d{4}$/, "Le code PIN doit comporter exactement 4 chiffres"),
+        vehicule: z.string().optional(),
+        zonesCouvertes: z.array(z.string()).min(1),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [societe] = await db
+        .select()
+        .from(societesLivraison)
+        .where(eq(societesLivraison.utilisateurId, ctx.user.id));
+      if (!societe) throw new TRPCError({ code: "NOT_FOUND", message: "Profil société introuvable" });
+
+      if (societe.statutValidation !== "valide") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Votre société doit être validée par ProxiGaz avant de pouvoir ajouter des livreurs",
+        });
+      }
+
+      const existant = await db
+        .select()
+        .from(utilisateurs)
+        .where(eq(utilisateurs.telephone, input.telephone));
+      if (existant.length > 0) {
+        throw new TRPCError({ code: "CONFLICT", message: "Ce numéro est déjà utilisé" });
+      }
+
+      const motDePasseHash = await bcrypt.hash(input.codePin, 10);
+
+      const [user] = await db
+        .insert(utilisateurs)
+        .values({
+          nom: input.nom,
+          telephone: input.telephone,
+          motDePasseHash,
+          ville: societe.ville,
+          commune: societe.commune,
+          role: "livreur",
+        })
+        .returning();
+
+      const [livreurCree] = await db
+        .insert(livreurs)
+        .values({
+          utilisateurId: user.id,
+          societeLivraisonId: societe.id,
+          vehicule: input.vehicule,
+          zonesCouvertes: input.zonesCouvertes,
+          pays: societe.pays,
+          ville: societe.ville,
+          commune: societe.commune,
+          quartier: societe.quartier,
+          latitude: societe.latitude,
+          longitude: societe.longitude,
+          statutValidation: "valide", // la société est déjà validée, ses livreurs le sont d'office
+          credits: 0, // inutilisé : ce livreur puise dans le pot commun de la société
+        })
+        .returning();
+
+      return { utilisateur: { id: user.id, nom: user.nom }, livreur: livreurCree };
+    }),
+
+  monCreditSociete: requireRole("societe_livraison").query(async ({ ctx }) => {
+    const [societe] = await db
+      .select()
+      .from(societesLivraison)
+      .where(eq(societesLivraison.utilisateurId, ctx.user.id));
+    if (!societe) throw new TRPCError({ code: "NOT_FOUND", message: "Profil société introuvable" });
+    return { credits: societe.credits };
+  }),
+
+  mesMouvementsCreditSociete: requireRole("societe_livraison").query(async ({ ctx }) => {
+    const [societe] = await db
+      .select()
+      .from(societesLivraison)
+      .where(eq(societesLivraison.utilisateurId, ctx.user.id));
+    if (!societe) throw new TRPCError({ code: "NOT_FOUND", message: "Profil société introuvable" });
+
+    return db
+      .select()
+      .from(mouvementsCredit)
+      .where(eq(mouvementsCredit.societeLivraisonId, societe.id))
+      .orderBy(desc(mouvementsCredit.createdAt))
+      .limit(100);
+  }),
+
+  demanderCreditSociete: requireRole("societe_livraison")
+    .input(
+      z.object({
+        quantiteCredits: z.number().int().positive(),
+        referencePaiement: z.string().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [societe] = await db
+        .select()
+        .from(societesLivraison)
+        .where(eq(societesLivraison.utilisateurId, ctx.user.id));
+      if (!societe) throw new TRPCError({ code: "NOT_FOUND", message: "Profil société introuvable" });
+
+      const [demande] = await db
+        .insert(demandesCredit)
+        .values({
+          societeLivraisonId: societe.id,
+          quantiteCredits: input.quantiteCredits,
+          montantPaye: (input.quantiteCredits * 100).toString(),
+          modePaiement: "mobile_money",
+          referencePaiement: input.referencePaiement,
+          statut: "en_attente",
+        })
+        .returning();
+
+      return demande;
+    }),
+
+  statsSociete: requireRole("societe_livraison").query(async ({ ctx }) => {
+    const [societe] = await db
+      .select()
+      .from(societesLivraison)
+      .where(eq(societesLivraison.utilisateurId, ctx.user.id));
+    if (!societe) throw new TRPCError({ code: "NOT_FOUND", message: "Profil société introuvable" });
+
+    const livreursSociete = await db
+      .select({ id: livreurs.id, nombreLivraisons: livreurs.nombreLivraisons })
+      .from(livreurs)
+      .where(eq(livreurs.societeLivraisonId, societe.id));
+
+    const livreurIds = livreursSociete.map((l) => l.id);
+    const totalLivraisons = livreursSociete.reduce((s, l) => s + l.nombreLivraisons, 0);
+
+    let enCoursActuellement = 0;
+    if (livreurIds.length) {
+      const rows = await db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(commandesGaz)
+        .where(and(eq(commandesGaz.statut, "en_livraison"), sql`${commandesGaz.livreurId} = ANY(${livreurIds})`));
+      enCoursActuellement = rows[0]?.n ?? 0;
+    }
+
+    return {
+      nombreLivreurs: livreursSociete.length,
+      totalLivraisons,
+      enCoursActuellement,
+    };
+  }),
 });

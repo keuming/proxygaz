@@ -10,6 +10,7 @@ const {
   boutiquesGaz,
   ramasseurs,
   livreurs,
+  societesLivraison,
   utilisateurs,
   marquesGaz,
   stockBoutique,
@@ -270,12 +271,19 @@ export const adminRouter = router({
         livreur: livreurs,
         nom: utilisateurs.nom,
         telephone: utilisateurs.telephone,
+        nomSociete: societesLivraison.nomSociete,
       })
       .from(livreurs)
       .innerJoin(utilisateurs, eq(livreurs.utilisateurId, utilisateurs.id))
+      .leftJoin(societesLivraison, eq(livreurs.societeLivraisonId, societesLivraison.id))
       .orderBy(desc(livreurs.createdAt));
 
-    return rows.map((r) => ({ ...r.livreur, nom: r.nom, telephone: r.telephone }));
+    return rows.map((r) => ({
+      ...r.livreur,
+      nom: r.nom,
+      telephone: r.telephone,
+      nomSociete: r.nomSociete,
+    }));
   }),
 
   validerLivreur: adminProcedure
@@ -360,6 +368,7 @@ export const adminRouter = router({
         longitude: z.number().optional(),
         vehicule: z.string().optional(),
         zonesCouvertes: z.array(z.string()).min(1),
+        societeLivraisonId: z.string().uuid().optional(),
       })
     )
     .mutation(async ({ input }) => {
@@ -390,10 +399,13 @@ export const adminRouter = router({
         })
         .returning();
 
+      const rattacheASociete = !!input.societeLivraisonId;
+
       const [livreur] = await db
         .insert(livreurs)
         .values({
           utilisateurId: user.id,
+          societeLivraisonId: input.societeLivraisonId,
           vehicule: input.vehicule,
           zonesCouvertes: input.zonesCouvertes,
           pays: input.pays,
@@ -403,19 +415,168 @@ export const adminRouter = router({
           latitude: input.latitude,
           longitude: input.longitude,
           statutValidation: "valide", // créé par l'admin : validé d'office
+          // Si rattaché à une société, ce livreur puise dans son pot commun — pas de crédits
+          // individuels dans ce cas.
+          credits: rattacheASociete ? 0 : CREDITS_BIENVENUE,
+        })
+        .returning();
+
+      if (!rattacheASociete) {
+        await db.insert(mouvementsCredit).values({
+          livreurId: livreur.id,
+          typeMouvement: "ajustement",
+          quantite: CREDITS_BIENVENUE,
+          soldeApres: CREDITS_BIENVENUE,
+          notes: "Crédits de bienvenue offerts à la création du compte",
+        });
+      }
+
+      return { utilisateur: user, livreur };
+    }),
+
+  // ============================================================
+  // SOCIÉTÉS DE LIVRAISON
+  // ============================================================
+
+  listSocietesLivraison: adminProcedure.query(async () => {
+    const rows = await db
+      .select({
+        societe: societesLivraison,
+        nom: utilisateurs.nom,
+        telephone: utilisateurs.telephone,
+      })
+      .from(societesLivraison)
+      .innerJoin(utilisateurs, eq(societesLivraison.utilisateurId, utilisateurs.id))
+      .orderBy(desc(societesLivraison.createdAt));
+
+    // Nombre de livreurs rattachés à chaque société, pour affichage dans la liste admin
+    const compteurs = await db
+      .select({ societeLivraisonId: livreurs.societeLivraisonId, n: sql<number>`count(*)::int` })
+      .from(livreurs)
+      .where(sql`${livreurs.societeLivraisonId} IS NOT NULL`)
+      .groupBy(livreurs.societeLivraisonId);
+    const compteurParSociete = new Map(compteurs.map((c) => [c.societeLivraisonId, c.n]));
+
+    return rows.map((r) => ({
+      ...r.societe,
+      gerantNom: r.nom,
+      gerantTelephone: r.telephone,
+      nombreLivreurs: compteurParSociete.get(r.societe.id) ?? 0,
+    }));
+  }),
+
+  changerStatutSocieteLivraison: adminProcedure
+    .input(
+      z.object({
+        societeId: z.string().uuid(),
+        statut: z.enum(["en_attente", "valide", "rejete", "suspendu"]),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const [societe] = await db
+        .update(societesLivraison)
+        .set({ statutValidation: input.statut })
+        .where(eq(societesLivraison.id, input.societeId))
+        .returning();
+
+      if (!societe) throw new TRPCError({ code: "NOT_FOUND", message: "Société introuvable" });
+      return societe;
+    }),
+
+  modifierSocieteLivraison: adminProcedure
+    .input(
+      z.object({
+        societeId: z.string().uuid(),
+        nomSociete: z.string().min(2).optional(),
+        pays: z.string().min(2).optional(),
+        ville: z.string().min(2).optional(),
+        commune: z.string().optional(),
+        quartier: z.string().optional(),
+        latitude: z.number().optional(),
+        longitude: z.number().optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const { societeId, ...champs } = input;
+
+      const [societe] = await db
+        .update(societesLivraison)
+        .set(champs)
+        .where(eq(societesLivraison.id, societeId))
+        .returning();
+
+      if (!societe) throw new TRPCError({ code: "NOT_FOUND", message: "Société introuvable" });
+      return societe;
+    }),
+
+  // Création directe d'un compte société de livraison par l'admin (auto-validée)
+  creerSocieteLivraison: adminProcedure
+    .input(
+      z.object({
+        nom: z.string().min(2),
+        telephone: z.string().min(8),
+        codePin: z.string().regex(/^\d{4}$/, "Le code PIN doit comporter exactement 4 chiffres"),
+        nomSociete: z.string().min(2),
+        pays: z.string().min(2).default("Côte d'Ivoire"),
+        ville: z.string().min(2),
+        commune: z.string().optional(),
+        quartier: z.string().optional(),
+        latitude: z.number().optional(),
+        longitude: z.number().optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const bcrypt = (await import("bcryptjs")).default;
+
+      const existant = await db
+        .select()
+        .from(utilisateurs)
+        .where(eq(utilisateurs.telephone, input.telephone));
+      if (existant.length > 0) {
+        throw new TRPCError({ code: "CONFLICT", message: "Ce numéro est déjà utilisé" });
+      }
+
+      const motDePasseHash = await bcrypt.hash(input.codePin, 10);
+
+      const [user] = await db
+        .insert(utilisateurs)
+        .values({
+          nom: input.nom,
+          telephone: input.telephone,
+          motDePasseHash,
+          ville: input.ville,
+          commune: input.commune,
+          latitude: input.latitude,
+          longitude: input.longitude,
+          role: "societe_livraison",
+        })
+        .returning();
+
+      const [societe] = await db
+        .insert(societesLivraison)
+        .values({
+          utilisateurId: user.id,
+          nomSociete: input.nomSociete,
+          pays: input.pays,
+          ville: input.ville,
+          commune: input.commune,
+          quartier: input.quartier,
+          latitude: input.latitude,
+          longitude: input.longitude,
+          statutValidation: "valide", // créée par l'admin : validée d'office
           credits: CREDITS_BIENVENUE,
         })
         .returning();
 
       await db.insert(mouvementsCredit).values({
-        livreurId: livreur.id,
+        societeLivraisonId: societe.id,
         typeMouvement: "ajustement",
         quantite: CREDITS_BIENVENUE,
         soldeApres: CREDITS_BIENVENUE,
         notes: "Crédits de bienvenue offerts à la création du compte",
       });
 
-      return { utilisateur: user, livreur };
+      return { utilisateur: user, societe };
     }),
 
   // ---- Marques de gaz (référentiel) ----
@@ -738,6 +899,18 @@ export const adminRouter = router({
         .where(input?.statut ? eq(demandesCredit.statut, input.statut) : undefined)
         .orderBy(desc(demandesCredit.createdAt));
 
+      const rowsSociete = await db
+        .select({
+          demande: demandesCredit,
+          societeNom: societesLivraison.nomSociete,
+          societeTelephone: utilisateurs.telephone,
+        })
+        .from(demandesCredit)
+        .leftJoin(societesLivraison, eq(demandesCredit.societeLivraisonId, societesLivraison.id))
+        .leftJoin(utilisateurs, eq(societesLivraison.utilisateurId, utilisateurs.id))
+        .where(input?.statut ? eq(demandesCredit.statut, input.statut) : undefined)
+        .orderBy(desc(demandesCredit.createdAt));
+
       const resultats = [
         ...rows
           .filter((r) => r.demande.livreurId !== null)
@@ -754,6 +927,14 @@ export const adminRouter = router({
             profil: "ramasseur" as const,
             nomDemandeur: r.ramasseurNomSociete ?? r.ramasseurNom,
             telephoneDemandeur: r.ramasseurTelephone,
+          })),
+        ...rowsSociete
+          .filter((r) => r.demande.societeLivraisonId !== null)
+          .map((r) => ({
+            ...r.demande,
+            profil: "societe_livraison" as const,
+            nomDemandeur: r.societeNom,
+            telephoneDemandeur: r.societeTelephone,
           })),
       ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
@@ -801,6 +982,21 @@ export const adminRouter = router({
 
         await db.insert(mouvementsCredit).values({
           ramasseurId: demande.ramasseurId,
+          typeMouvement: "achat",
+          quantite: demande.quantiteCredits,
+          soldeApres: maj.credits,
+          reference: demande.id,
+          notes: `Achat de ${demande.quantiteCredits} crédit(s) — ${demande.montantPaye} FCFA`,
+        });
+      } else if (demande.societeLivraisonId) {
+        const [maj] = await db
+          .update(societesLivraison)
+          .set({ credits: sql`${societesLivraison.credits} + ${demande.quantiteCredits}` })
+          .where(eq(societesLivraison.id, demande.societeLivraisonId))
+          .returning();
+
+        await db.insert(mouvementsCredit).values({
+          societeLivraisonId: demande.societeLivraisonId,
           typeMouvement: "achat",
           quantite: demande.quantiteCredits,
           soldeApres: maj.credits,
