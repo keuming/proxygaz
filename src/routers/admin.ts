@@ -621,6 +621,37 @@ export const adminRouter = router({
       return marque;
     }),
 
+  // Modification du référentiel (nom, taille, prix homologué, activation/désactivation).
+  // C'est le seul endroit où le prix homologué peut changer — les boutiques n'y ont jamais
+  // accès, elles ne gèrent que leur quantité en stock (voir majMonStock / approvisionnements).
+  modifierMarqueGaz: adminProcedure
+    .input(
+      z.object({
+        marqueId: z.string().uuid(),
+        nom: z.string().min(2).optional(),
+        taille: z.string().min(1).optional(),
+        prixRecharge: z.number().positive().optional(),
+        prixConsigne: z.number().nonnegative().optional(),
+        actif: z.boolean().optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const { marqueId, prixRecharge, prixConsigne, ...reste } = input;
+
+      const [marque] = await db
+        .update(marquesGaz)
+        .set({
+          ...reste,
+          ...(prixRecharge !== undefined ? { prixRecharge: prixRecharge.toString() } : {}),
+          ...(prixConsigne !== undefined ? { prixConsigne: prixConsigne.toString() } : {}),
+        })
+        .where(eq(marquesGaz.id, marqueId))
+        .returning();
+
+      if (!marque) throw new TRPCError({ code: "NOT_FOUND", message: "Marque introuvable" });
+      return marque;
+    }),
+
   // ---- Création d'un compte boutique (par l'admin, auto-validé) ----
   creerBoutique: adminProcedure
     .input(
