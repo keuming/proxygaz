@@ -858,12 +858,41 @@ export const adminRouter = router({
     }),
 
   // ---- Gestion du stock d'une boutique ----
+
+  // Vue du stock complet d'une boutique pour l'admin : toutes les marques actives du
+  // référentiel, avec la quantité disponible (0 si la boutique n'a jamais eu de ligne de
+  // stock pour cette marque) — même logique de fusion que gaz.monStock côté boutique.
+  stockDUneBoutique: adminProcedure
+    .input(z.object({ boutiqueId: z.string().uuid() }))
+    .query(async ({ input }) => {
+      const marques = await db.select().from(marquesGaz).where(eq(marquesGaz.actif, true));
+
+      const stocks = await db
+        .select()
+        .from(stockBoutique)
+        .where(eq(stockBoutique.boutiqueId, input.boutiqueId));
+
+      const stockParMarque = new Map(stocks.map((s) => [s.marqueGazId, s]));
+
+      return marques.map((m) => {
+        const s = stockParMarque.get(m.id);
+        return {
+          marqueGazId: m.id,
+          marqueNom: m.nom,
+          marqueTaille: m.taille,
+          quantiteDisponible: s?.quantiteDisponible ?? 0,
+          seuilAlerte: s?.seuilAlerte ?? 5,
+        };
+      });
+    }),
+
   majStock: adminProcedure
     .input(
       z.object({
         boutiqueId: z.string().uuid(),
         marqueGazId: z.string().uuid(),
         quantiteDisponible: z.number().int().nonnegative(),
+        seuilAlerte: z.number().int().nonnegative().optional(),
       })
     )
     .mutation(async ({ input }) => {
@@ -878,11 +907,27 @@ export const adminRouter = router({
         );
 
       if (existant) {
+        const ecart = input.quantiteDisponible - existant.quantiteDisponible;
         const [maj] = await db
           .update(stockBoutique)
-          .set({ quantiteDisponible: input.quantiteDisponible, updatedAt: new Date() })
+          .set({
+            quantiteDisponible: input.quantiteDisponible,
+            seuilAlerte: input.seuilAlerte ?? existant.seuilAlerte,
+            updatedAt: new Date(),
+          })
           .where(eq(stockBoutique.id, existant.id))
           .returning();
+
+        if (ecart !== 0) {
+          await db.insert(mouvementsStock).values({
+            boutiqueId: input.boutiqueId,
+            marqueGazId: input.marqueGazId,
+            typeMouvement: "ajustement",
+            quantite: ecart,
+            soldeApres: input.quantiteDisponible,
+            notes: "Ajustement manuel par l'admin",
+          });
+        }
         return maj;
       }
 
@@ -892,8 +937,21 @@ export const adminRouter = router({
           boutiqueId: input.boutiqueId,
           marqueGazId: input.marqueGazId,
           quantiteDisponible: input.quantiteDisponible,
+          seuilAlerte: input.seuilAlerte ?? 5,
         })
         .returning();
+
+      if (input.quantiteDisponible > 0) {
+        await db.insert(mouvementsStock).values({
+          boutiqueId: input.boutiqueId,
+          marqueGazId: input.marqueGazId,
+          typeMouvement: "ajustement",
+          quantite: input.quantiteDisponible,
+          soldeApres: input.quantiteDisponible,
+          notes: "Stock initial (défini par l'admin)",
+        });
+      }
+
       return créé;
     }),
 
