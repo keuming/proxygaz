@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { router, publicProcedure, protectedProcedure, requireRole } from "../trpc.js";
 import { db, schema } from "../db/index.js";
 
-const { demandesRamassage, ramasseurs, notifications, mouvementsCredit, demandesCredit } = schema;
+const { demandesRamassage, ramasseurs, societesLivraison, notifications, mouvementsCredit, demandesCredit } = schema;
 
 /**
  * Distance à vol d'oiseau entre deux points GPS (formule de Haversine), en kilomètres.
@@ -211,17 +211,41 @@ export const ramassageRouter = router({
       }
 
       // Frais de service ProxiGaz : 1 crédit (100 FCFA) réservé avant d'accepter la demande.
-      const [ramasseurDebite] = await db
-        .update(ramasseurs)
-        .set({ credits: sql`${ramasseurs.credits} - 1` })
-        .where(and(eq(ramasseurs.id, profilRamasseur.id), gt(ramasseurs.credits, 0)))
-        .returning();
+      // Si le ramasseur appartient à une société de livraison, c'est le pot commun de la
+      // société qui est débité, pas son solde individuel — même logique que les livreurs.
+      const appartientAUneSociete = !!profilRamasseur.societeLivraisonId;
 
-      if (!ramasseurDebite) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "Crédit insuffisant. Achetez des crédits pour accepter des demandes.",
-        });
+      let soldeApresDebit: number;
+      if (appartientAUneSociete) {
+        const [societeDebitee] = await db
+          .update(societesLivraison)
+          .set({ credits: sql`${societesLivraison.credits} - 1` })
+          .where(
+            and(eq(societesLivraison.id, profilRamasseur.societeLivraisonId!), gt(societesLivraison.credits, 0))
+          )
+          .returning();
+
+        if (!societeDebitee) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Crédit de votre société épuisé. Contactez votre société pour recharger le pot commun.",
+          });
+        }
+        soldeApresDebit = societeDebitee.credits;
+      } else {
+        const [ramasseurDebite] = await db
+          .update(ramasseurs)
+          .set({ credits: sql`${ramasseurs.credits} - 1` })
+          .where(and(eq(ramasseurs.id, profilRamasseur.id), gt(ramasseurs.credits, 0)))
+          .returning();
+
+        if (!ramasseurDebite) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Crédit insuffisant. Achetez des crédits pour accepter des demandes.",
+          });
+        }
+        soldeApresDebit = ramasseurDebite.credits;
       }
 
       // UPDATE atomique conditionné sur le statut actuel : un seul appel concurrent
@@ -242,21 +266,39 @@ export const ramassageRouter = router({
         .returning();
 
       if (!demandeMiseAJour) {
-        // La demande a été prise entretemps par un autre ramasseur : on rembourse le crédit.
-        const [rembourse] = await db
-          .update(ramasseurs)
-          .set({ credits: sql`${ramasseurs.credits} + 1` })
-          .where(eq(ramasseurs.id, profilRamasseur.id))
-          .returning();
+        // La demande a été prise entretemps par un autre ramasseur : on rembourse le crédit,
+        // à la société si c'était son pot commun, sinon au ramasseur lui-même.
+        if (appartientAUneSociete) {
+          const [rembourse] = await db
+            .update(societesLivraison)
+            .set({ credits: sql`${societesLivraison.credits} + 1` })
+            .where(eq(societesLivraison.id, profilRamasseur.societeLivraisonId!))
+            .returning();
 
-        await db.insert(mouvementsCredit).values({
-          ramasseurId: profilRamasseur.id,
-          typeMouvement: "ajustement",
-          quantite: 1,
-          soldeApres: rembourse.credits,
-          reference: input.demandeId,
-          notes: "Remboursement : demande déjà prise par un autre ramasseur",
-        });
+          await db.insert(mouvementsCredit).values({
+            societeLivraisonId: profilRamasseur.societeLivraisonId!,
+            typeMouvement: "ajustement",
+            quantite: 1,
+            soldeApres: rembourse.credits,
+            reference: input.demandeId,
+            notes: `Remboursement : demande déjà prise par un autre ramasseur (${profilRamasseur.nomSociete ?? "ramasseur société"})`,
+          });
+        } else {
+          const [rembourse] = await db
+            .update(ramasseurs)
+            .set({ credits: sql`${ramasseurs.credits} + 1` })
+            .where(eq(ramasseurs.id, profilRamasseur.id))
+            .returning();
+
+          await db.insert(mouvementsCredit).values({
+            ramasseurId: profilRamasseur.id,
+            typeMouvement: "ajustement",
+            quantite: 1,
+            soldeApres: rembourse.credits,
+            reference: input.demandeId,
+            notes: "Remboursement : demande déjà prise par un autre ramasseur",
+          });
+        }
 
         throw new TRPCError({
           code: "CONFLICT",
@@ -265,12 +307,15 @@ export const ramassageRouter = router({
       }
 
       await db.insert(mouvementsCredit).values({
-        ramasseurId: profilRamasseur.id,
+        ramasseurId: appartientAUneSociete ? undefined : profilRamasseur.id,
+        societeLivraisonId: appartientAUneSociete ? profilRamasseur.societeLivraisonId! : undefined,
         typeMouvement: "debit_ramassage",
         quantite: -1,
-        soldeApres: ramasseurDebite.credits,
+        soldeApres: soldeApresDebit,
         reference: demandeMiseAJour.id,
-        notes: "Frais de service ProxiGaz (100 FCFA)",
+        notes: appartientAUneSociete
+          ? "Frais de service ProxiGaz (100 FCFA) — ramasseur rattaché à une société"
+          : "Frais de service ProxiGaz (100 FCFA)",
       });
 
       await db.insert(notifications).values({
@@ -537,6 +582,14 @@ export const ramassageRouter = router({
         .where(eq(ramasseurs.utilisateurId, ctx.user.id));
       if (!profilRamasseur) throw new TRPCError({ code: "NOT_FOUND", message: "Profil ramasseur introuvable" });
 
+      if (profilRamasseur.societeLivraisonId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message:
+            "Vous faites partie d'une société de livraison — c'est elle qui recharge le pot commun de crédits, pas vous individuellement.",
+        });
+      }
+
       const [demande] = await db
         .insert(demandesCredit)
         .values({
@@ -550,5 +603,98 @@ export const ramassageRouter = router({
         .returning();
 
       return demande;
+    }),
+
+  // ============================================================
+  // SOCIÉTÉ DE LIVRAISON — gestion de ses propres ramasseurs
+  // ============================================================
+
+  // Liste des ramasseurs rattachés à cette société (utilisée aussi côté admin pour le
+  // regroupement par société dans la liste générale des ramasseurs).
+  mesRamasseursSociete: requireRole("societe_livraison").query(async ({ ctx }) => {
+    const [societe] = await db
+      .select()
+      .from(societesLivraison)
+      .where(eq(societesLivraison.utilisateurId, ctx.user.id));
+    if (!societe) throw new TRPCError({ code: "NOT_FOUND", message: "Profil société introuvable" });
+
+    return db
+      .select()
+      .from(ramasseurs)
+      .where(eq(ramasseurs.societeLivraisonId, societe.id))
+      .orderBy(desc(ramasseurs.createdAt));
+  }),
+
+  // La société ajoute un ramasseur sous son propre compte. Le ramasseur créé garde son
+  // propre accès (téléphone + PIN) pour accepter ses demandes sur le terrain, mais son
+  // crédit est celui du pot commun de la société — même logique que pour un livreur.
+  ajouterRamasseurSousSociete: requireRole("societe_livraison")
+    .input(
+      z.object({
+        nom: z.string().min(2),
+        telephone: z.string().min(8),
+        codePin: z.string().regex(/^\d{4}$/, "Le code PIN doit comporter exactement 4 chiffres"),
+        vehicule: z.string().optional(),
+        zonesCouvertes: z.array(z.string()).min(1),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [societe] = await db
+        .select()
+        .from(societesLivraison)
+        .where(eq(societesLivraison.utilisateurId, ctx.user.id));
+      if (!societe) throw new TRPCError({ code: "NOT_FOUND", message: "Profil société introuvable" });
+
+      if (societe.statutValidation !== "valide") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Votre société doit être validée par ProxiGaz avant de pouvoir ajouter des ramasseurs",
+        });
+      }
+
+      const bcrypt = (await import("bcryptjs")).default;
+
+      const existant = await db
+        .select()
+        .from(schema.utilisateurs)
+        .where(eq(schema.utilisateurs.telephone, input.telephone));
+      if (existant.length > 0) {
+        throw new TRPCError({ code: "CONFLICT", message: "Ce numéro est déjà utilisé" });
+      }
+
+      const motDePasseHash = await bcrypt.hash(input.codePin, 10);
+
+      const [user] = await db
+        .insert(schema.utilisateurs)
+        .values({
+          nom: input.nom,
+          telephone: input.telephone,
+          motDePasseHash,
+          ville: societe.ville,
+          commune: societe.commune,
+          role: "ramasseur",
+        })
+        .returning();
+
+      const [ramasseurCree] = await db
+        .insert(ramasseurs)
+        .values({
+          utilisateurId: user.id,
+          societeLivraisonId: societe.id,
+          type: "societe",
+          vehicule: input.vehicule,
+          zonesCouvertes: input.zonesCouvertes,
+          pays: societe.pays,
+          ville: societe.ville,
+          commune: societe.commune,
+          quartier: societe.quartier,
+          latitude: societe.latitude,
+          longitude: societe.longitude,
+          statutValidation: "valide", // la société est déjà validée, ses ramasseurs le sont d'office
+          credits: 0, // inutilisé : ce ramasseur puise dans le pot commun de la société
+        })
+        .returning();
+
+      return { utilisateur: { id: user.id, nom: user.nom }, ramasseur: ramasseurCree };
     }),
 });

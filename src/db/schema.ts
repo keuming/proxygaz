@@ -284,7 +284,12 @@ export const ramasseurs = pgTable("ramasseurs", {
   id: uuid("id").defaultRandom().primaryKey(),
   utilisateurId: uuid("utilisateur_id").references(() => utilisateurs.id).notNull(),
   type: typeRamasseurEnum("type").notNull().default("particulier"),
-  nomSociete: varchar("nom_societe", { length: 150 }), // si type = societe
+  nomSociete: varchar("nom_societe", { length: 150 }), // si type = societe (nom informatif libre)
+  // Rattachement optionnel à une société de livraison ProxiGaz (entité réelle, distincte du
+  // champ nomSociete ci-dessus qui n'est qu'un libellé libre). Si renseigné, ce ramasseur
+  // puise dans le pot commun de la société (societesLivraison.credits) au lieu de son
+  // solde individuel — même logique que pour les livreurs et les boutiques.
+  societeLivraisonId: uuid("societe_livraison_id").references(() => societesLivraison.id),
   zonesCouvertes: jsonb("zones_couvertes").notNull().default([]), // ["Cocody", "Marcory", ...]
   vehicule: varchar("vehicule", { length: 60 }), // "camion", "tricycle", "camionnette"
   pays: varchar("pays", { length: 100 }).notNull().default("Côte d'Ivoire"),

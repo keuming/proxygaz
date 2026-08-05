@@ -231,12 +231,19 @@ export const adminRouter = router({
         ramasseur: ramasseurs,
         nom: utilisateurs.nom,
         telephone: utilisateurs.telephone,
+        nomSocieteLivraison: societesLivraison.nomSociete,
       })
       .from(ramasseurs)
       .innerJoin(utilisateurs, eq(ramasseurs.utilisateurId, utilisateurs.id))
+      .leftJoin(societesLivraison, eq(ramasseurs.societeLivraisonId, societesLivraison.id))
       .orderBy(desc(ramasseurs.createdAt));
 
-    return rows.map((r) => ({ ...r.ramasseur, nom: r.nom, telephone: r.telephone }));
+    return rows.map((r) => ({
+      ...r.ramasseur,
+      nom: r.nom,
+      telephone: r.telephone,
+      nomSocieteLivraison: r.nomSocieteLivraison,
+    }));
   }),
 
   validerRamasseur: adminProcedure
@@ -246,6 +253,64 @@ export const adminRouter = router({
         .update(ramasseurs)
         .set({ statutValidation: input.approuver ? "valide" : "rejete" })
         .where(eq(ramasseurs.id, input.ramasseurId))
+        .returning();
+
+      if (!ramasseur) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Ramasseur introuvable" });
+      }
+      return ramasseur;
+    }),
+
+  // Delete : désactivation (jamais de suppression définitive). Manquait jusqu'ici : le
+  // sélecteur de statut du dashboard admin appelait cette route sans qu'elle existe.
+  changerStatutRamasseur: adminProcedure
+    .input(
+      z.object({
+        ramasseurId: z.string().uuid(),
+        statut: z.enum(["en_attente", "valide", "rejete", "suspendu"]),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const [ramasseur] = await db
+        .update(ramasseurs)
+        .set({ statutValidation: input.statut })
+        .where(eq(ramasseurs.id, input.ramasseurId))
+        .returning();
+
+      if (!ramasseur) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Ramasseur introuvable" });
+      }
+      return ramasseur;
+    }),
+
+  // Update : modification des informations d'un ramasseur existant, y compris son
+  // rattachement à une société de livraison (uuid pour rattacher, null pour détacher
+  // explicitement, absent pour ne pas y toucher). Manquait jusqu'ici : le formulaire
+  // "Modifier" du dashboard admin appelait cette route sans qu'elle existe.
+  modifierRamasseur: adminProcedure
+    .input(
+      z.object({
+        ramasseurId: z.string().uuid(),
+        type: z.enum(["particulier", "societe"]).optional(),
+        nomSociete: z.string().optional(),
+        zonesCouvertes: z.array(z.string()).optional(),
+        vehicule: z.string().optional(),
+        pays: z.string().min(2).optional(),
+        ville: z.string().min(2).optional(),
+        commune: z.string().optional(),
+        quartier: z.string().optional(),
+        latitude: z.number().optional(),
+        longitude: z.number().optional(),
+        societeLivraisonId: z.string().uuid().nullable().optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const { ramasseurId, ...champs } = input;
+
+      const [ramasseur] = await db
+        .update(ramasseurs)
+        .set(champs)
+        .where(eq(ramasseurs.id, ramasseurId))
         .returning();
 
       if (!ramasseur) {
@@ -271,6 +336,7 @@ export const adminRouter = router({
         nomSociete: z.string().optional(),
         zonesCouvertes: z.array(z.string()).min(1),
         vehicule: z.string().optional(),
+        societeLivraisonId: z.string().uuid().optional(),
       })
     )
     .mutation(async ({ input }) => {
@@ -301,12 +367,15 @@ export const adminRouter = router({
         })
         .returning();
 
+      const rattacheASociete = !!input.societeLivraisonId;
+
       const [ramasseur] = await db
         .insert(ramasseurs)
         .values({
           utilisateurId: user.id,
           type: input.type,
           nomSociete: input.nomSociete,
+          societeLivraisonId: input.societeLivraisonId,
           zonesCouvertes: input.zonesCouvertes,
           vehicule: input.vehicule,
           pays: input.pays,
@@ -316,17 +385,21 @@ export const adminRouter = router({
           latitude: input.latitude,
           longitude: input.longitude,
           statutValidation: "valide", // créé par l'admin : validé d'office
-          credits: CREDITS_BIENVENUE,
+          // Si rattaché à une société, ce ramasseur puise dans son pot commun — pas de
+          // crédits de bienvenue individuels, ils resteraient inutilisés.
+          credits: rattacheASociete ? 0 : CREDITS_BIENVENUE,
         })
         .returning();
 
-      await db.insert(mouvementsCredit).values({
-        ramasseurId: ramasseur.id,
-        typeMouvement: "ajustement",
-        quantite: CREDITS_BIENVENUE,
-        soldeApres: CREDITS_BIENVENUE,
-        notes: "Crédits de bienvenue offerts à la création du compte",
-      });
+      if (!rattacheASociete) {
+        await db.insert(mouvementsCredit).values({
+          ramasseurId: ramasseur.id,
+          typeMouvement: "ajustement",
+          quantite: CREDITS_BIENVENUE,
+          soldeApres: CREDITS_BIENVENUE,
+          notes: "Crédits de bienvenue offerts à la création du compte",
+        });
+      }
 
       return { utilisateur: user, ramasseur };
     }),
@@ -531,12 +604,20 @@ export const adminRouter = router({
       .groupBy(boutiquesGaz.societeLivraisonId);
     const compteurBoutiquesParSociete = new Map(compteursBoutiques.map((c) => [c.societeLivraisonId, c.n]));
 
+    const compteursRamasseurs = await db
+      .select({ societeLivraisonId: ramasseurs.societeLivraisonId, n: sql<number>`count(*)::int` })
+      .from(ramasseurs)
+      .where(sql`${ramasseurs.societeLivraisonId} IS NOT NULL`)
+      .groupBy(ramasseurs.societeLivraisonId);
+    const compteurRamasseursParSociete = new Map(compteursRamasseurs.map((c) => [c.societeLivraisonId, c.n]));
+
     return rows.map((r) => ({
       ...r.societe,
       gerantNom: r.nom,
       gerantTelephone: r.telephone,
       nombreLivreurs: compteurParSociete.get(r.societe.id) ?? 0,
       nombreBoutiques: compteurBoutiquesParSociete.get(r.societe.id) ?? 0,
+      nombreRamasseurs: compteurRamasseursParSociete.get(r.societe.id) ?? 0,
     }));
   }),
 

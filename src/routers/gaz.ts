@@ -12,6 +12,8 @@ const {
   boutiquesGaz,
   stockBoutique,
   livreurs,
+  ramasseurs,
+  demandesRamassage,
   societesLivraison,
   utilisateurs,
   notifications,
@@ -1701,11 +1703,32 @@ export const gazRouter = router({
       .from(boutiquesGaz)
       .where(eq(boutiquesGaz.societeLivraisonId, societe.id));
 
+    const ramasseursSociete = await db
+      .select({ id: ramasseurs.id, nombreRamassages: ramasseurs.nombreRamassages })
+      .from(ramasseurs)
+      .where(eq(ramasseurs.societeLivraisonId, societe.id));
+
+    const ramasseurIds = ramasseursSociete.map((r) => r.id);
+    const totalRamassages = ramasseursSociete.reduce((s, r) => s + r.nombreRamassages, 0);
+
+    let enCoursRamassageActuellement = 0;
+    if (ramasseurIds.length) {
+      const rows = await db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(demandesRamassage)
+        .where(
+          and(eq(demandesRamassage.statut, "en_cours"), sql`${demandesRamassage.ramasseurId} = ANY(${ramasseurIds})`)
+        );
+      enCoursRamassageActuellement = rows[0]?.n ?? 0;
+    }
+
     return {
       nombreLivreurs: livreursSociete.length,
       nombreBoutiques,
+      nombreRamasseurs: ramasseursSociete.length,
       totalLivraisons,
-      enCoursActuellement,
+      totalRamassages,
+      enCoursActuellement: enCoursActuellement + enCoursRamassageActuellement,
     };
   }),
 });

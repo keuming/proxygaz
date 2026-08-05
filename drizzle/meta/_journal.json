@@ -85,6 +85,13 @@
       "when": 1785927406009,
       "tag": "0011_societes_boutiques",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1785938916331,
+      "tag": "0012_societes_ramasseurs",
+      "breakpoints": true
     }
   ]
 }
