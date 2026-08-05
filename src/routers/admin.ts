@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { eq, desc, count, and, sql, like, inArray } from "drizzle-orm";
+import { eq, desc, count, and, or, sql, like, ilike, inArray } from "drizzle-orm";
 import { router, requireRole } from "../trpc.js";
 import { db, schema } from "../db/index.js";
 
@@ -15,6 +15,11 @@ const {
   stockBoutique,
   demandesCredit,
   mouvementsCredit,
+  fournisseurs,
+  approvisionnements,
+  mouvementsStock,
+  notifications,
+  paiements,
   statutCommandeGazEnum,
 } = schema;
 
@@ -824,5 +829,224 @@ export const adminRouter = router({
       }
 
       return demande;
+    }),
+
+  // ============================================================
+  // NETTOYAGE DES DONNÉES DE TEST
+  // ============================================================
+  // Identifie comme "test" tout compte dont le nom (ou le nom de boutique/société)
+  // contient le mot "test" (insensible à la casse) — c'est le motif utilisé par tous nos
+  // scénarios de test (script automatisé, comptes créés manuellement pour vérifier une
+  // fonctionnalité...). Toujours commencer par l'aperçu avant de confirmer la suppression.
+  apercuNettoyageTest: adminProcedure.query(async () => {
+    const boutiquesTest = await db
+      .select({ id: boutiquesGaz.id, nom: boutiquesGaz.nomBoutique, gerant: utilisateurs.nom })
+      .from(boutiquesGaz)
+      .innerJoin(utilisateurs, eq(boutiquesGaz.utilisateurId, utilisateurs.id))
+      .where(or(ilike(boutiquesGaz.nomBoutique, "%test%"), ilike(utilisateurs.nom, "%test%")));
+
+    const livreursTest = await db
+      .select({ id: livreurs.id, nom: utilisateurs.nom })
+      .from(livreurs)
+      .innerJoin(utilisateurs, eq(livreurs.utilisateurId, utilisateurs.id))
+      .where(ilike(utilisateurs.nom, "%test%"));
+
+    const ramasseursTest = await db
+      .select({ id: ramasseurs.id, nom: utilisateurs.nom, nomSociete: ramasseurs.nomSociete })
+      .from(ramasseurs)
+      .innerJoin(utilisateurs, eq(ramasseurs.utilisateurId, utilisateurs.id))
+      .where(or(ilike(utilisateurs.nom, "%test%"), ilike(ramasseurs.nomSociete, "%test%")));
+
+    const clientsTest = await db
+      .select({ id: utilisateurs.id, nom: utilisateurs.nom, telephone: utilisateurs.telephone })
+      .from(utilisateurs)
+      .where(and(eq(utilisateurs.role, "client"), ilike(utilisateurs.nom, "%test%")));
+
+    const boutiqueIds = boutiquesTest.map((b) => b.id);
+    const livreurIds = livreursTest.map((l) => l.id);
+    const ramasseurIds = ramasseursTest.map((r) => r.id);
+    const clientIds = clientsTest.map((c) => c.id);
+
+    let nbCommandesGaz = 0;
+    if (boutiqueIds.length || livreurIds.length || clientIds.length) {
+      const conditions = [];
+      if (boutiqueIds.length) conditions.push(inArray(commandesGaz.boutiqueId, boutiqueIds));
+      if (livreurIds.length) conditions.push(inArray(commandesGaz.livreurId, livreurIds));
+      if (clientIds.length) conditions.push(inArray(commandesGaz.clientId, clientIds));
+      const [{ n }] = await db.select({ n: count() }).from(commandesGaz).where(or(...conditions));
+      nbCommandesGaz = n;
+    }
+
+    let nbDemandesRamassage = 0;
+    if (ramasseurIds.length || clientIds.length) {
+      const conditions = [];
+      if (ramasseurIds.length) conditions.push(inArray(demandesRamassage.ramasseurId, ramasseurIds));
+      if (clientIds.length) conditions.push(inArray(demandesRamassage.clientId, clientIds));
+      const [{ n }] = await db.select({ n: count() }).from(demandesRamassage).where(or(...conditions));
+      nbDemandesRamassage = n;
+    }
+
+    return {
+      boutiques: boutiquesTest.map((b) => ({ nom: b.nom, gerant: b.gerant })),
+      livreurs: livreursTest.map((l) => ({ nom: l.nom })),
+      ramasseurs: ramasseursTest.map((r) => ({ nom: r.nomSociete || r.nom })),
+      clients: clientsTest.map((c) => ({ nom: c.nom, telephone: c.telephone })),
+      nbCommandesGaz,
+      nbDemandesRamassage,
+    };
+  }),
+
+  nettoyerDonneesTest: adminProcedure
+    .input(z.object({ confirmer: z.literal(true) }))
+    .mutation(async () => {
+      const boutiquesTest = await db
+        .select({ id: boutiquesGaz.id })
+        .from(boutiquesGaz)
+        .innerJoin(utilisateurs, eq(boutiquesGaz.utilisateurId, utilisateurs.id))
+        .where(or(ilike(boutiquesGaz.nomBoutique, "%test%"), ilike(utilisateurs.nom, "%test%")));
+
+      const livreursTest = await db
+        .select({ id: livreurs.id })
+        .from(livreurs)
+        .innerJoin(utilisateurs, eq(livreurs.utilisateurId, utilisateurs.id))
+        .where(ilike(utilisateurs.nom, "%test%"));
+
+      const ramasseursTest = await db
+        .select({ id: ramasseurs.id })
+        .from(ramasseurs)
+        .innerJoin(utilisateurs, eq(ramasseurs.utilisateurId, utilisateurs.id))
+        .where(or(ilike(utilisateurs.nom, "%test%"), ilike(ramasseurs.nomSociete, "%test%")));
+
+      // utilisateurId des gérants/livreurs/ramasseurs test, récupérés séparément (nécessaire
+      // pour purger leurs notifications/paiements avant de supprimer leur ligne utilisateurs)
+      const boutiquesTestAvecUser = await db
+        .select({ utilisateurId: boutiquesGaz.utilisateurId })
+        .from(boutiquesGaz)
+        .innerJoin(utilisateurs, eq(boutiquesGaz.utilisateurId, utilisateurs.id))
+        .where(or(ilike(boutiquesGaz.nomBoutique, "%test%"), ilike(utilisateurs.nom, "%test%")));
+      const livreursTestAvecUser = await db
+        .select({ utilisateurId: livreurs.utilisateurId })
+        .from(livreurs)
+        .innerJoin(utilisateurs, eq(livreurs.utilisateurId, utilisateurs.id))
+        .where(ilike(utilisateurs.nom, "%test%"));
+      const ramasseursTestAvecUser = await db
+        .select({ utilisateurId: ramasseurs.utilisateurId })
+        .from(ramasseurs)
+        .innerJoin(utilisateurs, eq(ramasseurs.utilisateurId, utilisateurs.id))
+        .where(or(ilike(utilisateurs.nom, "%test%"), ilike(ramasseurs.nomSociete, "%test%")));
+
+      const clientsTest = await db
+        .select({ id: utilisateurs.id })
+        .from(utilisateurs)
+        .where(and(eq(utilisateurs.role, "client"), ilike(utilisateurs.nom, "%test%")));
+
+      const boutiqueIds = boutiquesTest.map((b) => b.id);
+      const livreurIds = livreursTest.map((l) => l.id);
+      const ramasseurIds = ramasseursTest.map((r) => r.id);
+      const clientIds = clientsTest.map((c) => c.id);
+
+      const utilisateurIdsTest = [
+        ...boutiquesTestAvecUser.map((b) => b.utilisateurId),
+        ...livreursTestAvecUser.map((l) => l.utilisateurId),
+        ...ramasseursTestAvecUser.map((r) => r.utilisateurId),
+        ...clientIds,
+      ].filter((id): id is string => !!id);
+
+      // Commandes/demandes concernées, récupérées d'abord pour purger paiements avant
+      const commandesGazTest =
+        boutiqueIds.length || livreurIds.length || clientIds.length
+          ? await db
+              .select({ id: commandesGaz.id })
+              .from(commandesGaz)
+              .where(
+                or(
+                  ...[
+                    boutiqueIds.length ? inArray(commandesGaz.boutiqueId, boutiqueIds) : undefined,
+                    livreurIds.length ? inArray(commandesGaz.livreurId, livreurIds) : undefined,
+                    clientIds.length ? inArray(commandesGaz.clientId, clientIds) : undefined,
+                  ].filter((c): c is NonNullable<typeof c> => !!c)
+                )
+              )
+          : [];
+
+      const demandesRamassageTest =
+        ramasseurIds.length || clientIds.length
+          ? await db
+              .select({ id: demandesRamassage.id })
+              .from(demandesRamassage)
+              .where(
+                or(
+                  ...[
+                    ramasseurIds.length ? inArray(demandesRamassage.ramasseurId, ramasseurIds) : undefined,
+                    clientIds.length ? inArray(demandesRamassage.clientId, clientIds) : undefined,
+                  ].filter((c): c is NonNullable<typeof c> => !!c)
+                )
+              )
+          : [];
+
+      const commandeGazIds = commandesGazTest.map((c) => c.id);
+      const demandeRamassageIds = demandesRamassageTest.map((d) => d.id);
+
+      // Petit utilitaire : supprime uniquement si le tableau d'identifiants n'est pas vide
+      // (inArray avec un tableau vide n'a rien à filtrer, on saute simplement l'étape)
+      async function supprimerSi<T>(
+        table: any,
+        colonne: any,
+        ids: T[],
+        colonne2?: any,
+        ids2?: T[]
+      ) {
+        if (colonne2 && ids2 && ids2.length) {
+          if (ids.length) {
+            await db.delete(table).where(or(inArray(colonne, ids), inArray(colonne2, ids2)));
+          } else {
+            await db.delete(table).where(inArray(colonne2, ids2));
+          }
+          return;
+        }
+        if (ids.length) {
+          await db.delete(table).where(inArray(colonne, ids));
+        }
+      }
+
+      // Ordre strict imposé par les clés étrangères : le plus dépendant en premier.
+      await supprimerSi(mouvementsCredit, mouvementsCredit.livreurId, livreurIds, mouvementsCredit.ramasseurId, ramasseurIds);
+      await supprimerSi(demandesCredit, demandesCredit.livreurId, livreurIds, demandesCredit.ramasseurId, ramasseurIds);
+
+      if (commandeGazIds.length) await db.delete(paiements).where(inArray(paiements.commandeGazId, commandeGazIds));
+      if (demandeRamassageIds.length) await db.delete(paiements).where(inArray(paiements.demandeRamassageId, demandeRamassageIds));
+      if (utilisateurIdsTest.length) await db.delete(paiements).where(inArray(paiements.utilisateurId, utilisateurIdsTest));
+
+      await supprimerSi(notifications, notifications.utilisateurId, utilisateurIdsTest);
+      await supprimerSi(mouvementsStock, mouvementsStock.boutiqueId, boutiqueIds);
+      await supprimerSi(approvisionnements, approvisionnements.boutiqueId, boutiqueIds);
+      await supprimerSi(fournisseurs, fournisseurs.boutiqueId, boutiqueIds);
+      await supprimerSi(stockBoutique, stockBoutique.boutiqueId, boutiqueIds);
+      await supprimerSi(commandesGaz, commandesGaz.id, commandeGazIds);
+      await supprimerSi(demandesRamassage, demandesRamassage.id, demandeRamassageIds);
+      await supprimerSi(boutiquesGaz, boutiquesGaz.id, boutiqueIds);
+      await supprimerSi(livreurs, livreurs.id, livreurIds);
+      await supprimerSi(ramasseurs, ramasseurs.id, ramasseurIds);
+      await supprimerSi(utilisateurs, utilisateurs.id, utilisateurIdsTest);
+
+      // Marques de gaz "test" : uniquement si plus aucune référence réelle ne les utilise
+      // (protège toute marque test qui serait, par accident, encore liée à une vraie boutique).
+      await db.execute(sql`
+        DELETE FROM marques_gaz
+        WHERE nom ILIKE '%test%'
+          AND id NOT IN (SELECT marque_gaz_id FROM stock_boutique WHERE marque_gaz_id IS NOT NULL)
+          AND id NOT IN (SELECT marque_gaz_id FROM approvisionnements WHERE marque_gaz_id IS NOT NULL)
+      `);
+
+      return {
+        supprimes: {
+          boutiques: boutiqueIds.length,
+          livreurs: livreurIds.length,
+          ramasseurs: ramasseurIds.length,
+          clients: clientIds.length,
+          commandesGaz: commandeGazIds.length,
+          demandesRamassage: demandeRamassageIds.length,
+        },
+      };
     }),
 });
