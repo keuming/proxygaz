@@ -942,12 +942,20 @@ export const gazRouter = router({
         stock: stockBoutique,
         marqueNom: marquesGaz.nom,
         marqueTaille: marquesGaz.taille,
+        marquePrixRecharge: marquesGaz.prixRecharge,
+        marquePrixConsigne: marquesGaz.prixConsigne,
       })
       .from(stockBoutique)
       .innerJoin(marquesGaz, eq(stockBoutique.marqueGazId, marquesGaz.id))
       .where(eq(stockBoutique.boutiqueId, boutique.id));
 
-    return rows.map((r) => ({ ...r.stock, marqueNom: r.marqueNom, marqueTaille: r.marqueTaille }));
+    return rows.map((r) => ({
+      ...r.stock,
+      marqueNom: r.marqueNom,
+      marqueTaille: r.marqueTaille,
+      marquePrixRecharge: r.marquePrixRecharge,
+      marquePrixConsigne: r.marquePrixConsigne,
+    }));
   }),
 
   majMonStock: requireRole("boutique")
